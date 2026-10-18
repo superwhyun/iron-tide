@@ -1,0 +1,279 @@
+{
+  "metal_plate_02": {
+    "name": "Metal Plate 02",
+    "categories": [
+      "man made",
+      "metal"
+    ],
+    "type": 1,
+    "tags": [
+      "worn",
+      "metal sheet",
+      "corroded metal sheet",
+      "metal sheet ",
+      "steel sheeting",
+      "rusted",
+      "rusty",
+      "iron",
+      "industrial",
+      "grunge",
+      "oxidized metal",
+      "steel",
+      "rust",
+      "metallic",
+      "sheet",
+      "metal",
+      "corroded"
+    ],
+    "authors": {
+      "Rob Tuytel": "All"
+    },
+    "max_resolution": [
+      8192,
+      8192
+    ],
+    "dimensions": [
+      2000,
+      2000
+    ],
+    "date_published": 1723680000,
+    "sponsors": [
+      "3267566"
+    ],
+    "description": "Free 8K texture: worn, corroded steel plate with rusty, oxidized iron surfaces, scraped paint, subtle metallic sheen and industrial grunge details.",
+    "files_hash": "9b37fd795ff54dbd956f155a26e8d675490690ea",
+    "category_id": "733fc0a1-302e-50f0-bd83-79d7fd8f3f1e",
+    "category": "Metal/Sheet & Corrugated/Flat Sheet",
+    "attributes": {
+      "surface_use": "object",
+      "condition": [
+        "worn",
+        "rusted",
+        "damaged"
+      ],
+      "origin": "man_made"
+    },
+    "img_version": "bc5923f1",
+    "download_count": 76013,
+    "thumbnail_url": "https://cdn.polyhaven.com/asset_img/thumbs/metal_plate_02.png?width=256&height=256&format=webp&v=bc5923f1"
+  },
+  "rocky_terrain": {
+    "name": "Rocky Terrain",
+    "type": 1,
+    "tags": [
+      "rock face",
+      "rocky",
+      "solid rock",
+      "nature",
+      "grass",
+      "terrain",
+      "wilderness",
+      "uneven terrain",
+      "mountain",
+      "rugged",
+      "landscape"
+    ],
+    "authors": {
+      "Amal Kumar": "All"
+    },
+    "max_resolution": [
+      8192,
+      8192
+    ],
+    "dimensions": [
+      90000,
+      90000
+    ],
+    "date_published": 1723507200,
+    "categories": [
+      "outdoor",
+      "terrain",
+      "natural",
+      "rock",
+      "aerial"
+    ],
+    "files_hash": "ed4f64ced98e133be04387b75d6e827a375e9b04",
+    "description": "Free 8K texture of rugged rocky terrain with layered stone slabs, compacted soil and grass patches; detailed uneven terrain",
+    "category_id": "ad8bbc58-82b8-5734-a99b-3fbdb7f0163c",
+    "category": "Ground & Terrain/Rocky Ground/Rocky Landscape",
+    "attributes": {
+      "surface_use": "ground",
+      "condition": [
+        "weathered"
+      ],
+      "origin": "natural",
+      "setting": "outdoor",
+      "aerial": true
+    },
+    "img_version": "ee1e6791",
+    "download_count": 83845,
+    "thumbnail_url": "https://cdn.polyhaven.com/asset_img/thumbs/rocky_terrain.png?width=256&height=256&format=webp&v=ee1e6791"
+  },
+  "coast_sand_01": {
+    "date_published": 1645574400,
+    "name": "Coast Sand 01",
+    "type": 1,
+    "authors": {
+      "Rob Tuytel": "All"
+    },
+    "dimensions": [
+      15000,
+      15000
+    ],
+    "tags": [
+      "beach",
+      "costal",
+      "ocean",
+      "seaside",
+      "sand",
+      "brown",
+      "rough",
+      "gravel",
+      "damp",
+      "dirt",
+      "stones"
+    ],
+    "categories": [
+      "outdoor",
+      "terrain",
+      "sand",
+      "natural",
+      "aerial",
+      "collection: smugglers_cove",
+      "collection: verdant_trail"
+    ],
+    "max_resolution": [
+      8192,
+      8192
+    ],
+    "files_hash": "79f1efcc1f7dedcc546d529a09e1a09cfeb0b9b8",
+    "description": "Free 8K texture of damp coastal sand with brown, rough grain, scattered pebbles and gravel, patchy dirt and a subtle moisture sheen.",
+    "category_id": "2bed9a9d-8f5f-5f1f-815c-e33cfa63bf69",
+    "category": "Ground & Terrain/Sand/Beach & Coastal Sand",
+    "collections": [
+      "smugglers_cove",
+      "verdant_trail"
+    ],
+    "attributes": {
+      "surface_use": "ground",
+      "condition": [
+        "weathered"
+      ],
+      "origin": "natural",
+      "setting": "outdoor",
+      "aerial": true
+    },
+    "img_version": "411180bf",
+    "download_count": 90969,
+    "thumbnail_url": "https://cdn.polyhaven.com/asset_img/thumbs/coast_sand_01.png?width=256&height=256&format=webp&v=411180bf"
+  },
+  "wood_planks": {
+    "name": "Wood Planks",
+    "categories": [
+      "floor",
+      "wood",
+      "raw wood",
+      "man made"
+    ],
+    "type": 1,
+    "tags": [
+      "rough",
+      "weathered",
+      "old",
+      "discolored",
+      "wood",
+      "floor",
+      "wooden planks",
+      "wooden flooring ",
+      "planks",
+      "plank",
+      "grain",
+      "aged",
+      "worn",
+      "scratched",
+      "wooden",
+      "timber"
+    ],
+    "authors": {
+      "Amal Kumar": "All"
+    },
+    "info": null,
+    "dimensions": [
+      1499.999761581421,
+      1499.999761581421
+    ],
+    "date_published": 1700697600,
+    "sponsors": [
+      "78546118"
+    ],
+    "max_resolution": [
+      8192,
+      8192
+    ],
+    "files_hash": "1742bf4a727e0443e7ca3fc67b01f68ff45a2ec2",
+    "description": "Free 8K wood texture of weathered, aged planks with warm brown tones, visible grain, scratches, gaps and a worn, slightly discolored timber surface.",
+    "category_id": "30ac2613-5076-5364-b4da-130117ad592d",
+    "category": "Wood/Boards & Planks/Weathered Planks",
+    "attributes": {
+      "surface_use": "floor",
+      "condition": [
+        "weathered",
+        "worn"
+      ],
+      "origin": "man_made"
+    },
+    "img_version": "da0c3e1b",
+    "download_count": 135913,
+    "thumbnail_url": "https://cdn.polyhaven.com/asset_img/thumbs/wood_planks.png?width=256&height=256&format=webp&v=da0c3e1b"
+  },
+  "aerial_grass_rock": {
+    "type": 1,
+    "tags": [
+      "moss",
+      "grass",
+      "cliff",
+      "cave",
+      "rock face"
+    ],
+    "date_published": 1582514587,
+    "name": "Aerial Grass Rock",
+    "categories": [
+      "terrain",
+      "rock",
+      "outdoor",
+      "natural",
+      "aerial"
+    ],
+    "authors": {
+      "Rob Tuytel": "All"
+    },
+    "dimensions": [
+      15000,
+      15000
+    ],
+    "max_resolution": [
+      8192,
+      8192
+    ],
+    "sponsors": [
+      "76058381"
+    ],
+    "files_hash": "d610669c24e20d7c2effc4c116c718176f5b044a",
+    "description": "Free 8K aerial rock texture with moss and grass, rough weathered stone with fine gravel and earthy green-brown tones.",
+    "category_id": "e8121dc9-96d3-59b8-b8ee-83104e60ba82",
+    "category": "Stone/Rock & Cliffs/Mossy & Lichened Rock",
+    "attributes": {
+      "surface_use": "ground",
+      "condition": [
+        "mossy",
+        "weathered"
+      ],
+      "origin": "natural",
+      "setting": "outdoor",
+      "aerial": true
+    },
+    "img_version": "da74fb8a",
+    "download_count": 365532,
+    "thumbnail_url": "https://cdn.polyhaven.com/asset_img/thumbs/aerial_grass_rock.png?width=256&height=256&format=webp&v=da74fb8a"
+  }
+}
