@@ -41,6 +41,59 @@ landMat.onBeforeCompile = (shader) => {
       vec3 beach=texture2D(sandMap,vLand.xz*.045).rgb*.85;diffuseColor.rgb*=mix(beach,ground,smoothstep(.8,5.,vLand.y));`,
     );
 };
+// Surf band: foam lines rolling onto the beach, faded with distance like fog.
+export const surfMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  uniforms: { time: { value: 0 } },
+  vertexShader: `varying vec2 vUv;varying float vDist;
+    void main(){vUv=uv;vec4 w=modelMatrix*vec4(position,1.);vDist=distance(w.xyz,cameraPosition);gl_Position=projectionMatrix*viewMatrix*w;}`,
+  fragmentShader: `varying vec2 vUv;varying float vDist;uniform float time;
+    float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+    float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+      return mix(mix(hash(i),hash(i+vec2(1.,0.)),f.x),mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),f.x),f.y);}
+    void main(){
+      float across=vUv.y;
+      float n=noise(vec2(vUv.x*3.,across*4.-time*.4))*.8+noise(vec2(vUv.x*11.,across*9.))*.35;
+      float waves=smoothstep(.55,1.,sin(across*16.+time*1.6+n*3.)*.5+.5);
+      float edge=smoothstep(0.,.12,across)*(1.-smoothstep(.25,1.,across));
+      float shore=1.-smoothstep(0.,.18,across);
+      float a=(waves*.55+shore*.7)*edge*smoothstep(.3,.7,n+.25);
+      a*=exp(-vDist*.0011);
+      gl_FragColor=vec4(vec3(.82,.88,.88),a*.75);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+});
+function surfBand(i: Island) {
+  const positions: number[] = [],
+    uvs: number[] = [],
+    index: number[] = [],
+    steps = 256;
+  for (let n = 0; n <= steps; n++) {
+    const a = (n / steps) * Math.PI * 2,
+      r = shoreRadius(i, a);
+    for (const [k, scale] of [0.985, 1.13].entries()) {
+      positions.push(
+        i.x + Math.sin(a) * r * scale,
+        0.42,
+        i.z + Math.cos(a) * r * scale,
+      );
+      uvs.push((n / steps) * Math.round(i.radius / 6), k);
+    }
+    if (n < steps) {
+      const b = n * 2;
+      index.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(index);
+  const band = new THREE.Mesh(g, surfMaterial);
+  band.renderOrder = 1;
+  return band;
+}
 export function createIsland(i: Island) {
   const group = new THREE.Group();
   const size = i.radius * 2.22,
@@ -76,6 +129,6 @@ export function createIsland(i: Island) {
       opacity: 0.38,
     }),
   );
-  group.add(foam);
+  group.add(foam, surfBand(i));
   return group;
 }

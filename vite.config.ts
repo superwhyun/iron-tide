@@ -6,10 +6,14 @@ export default defineConfig({
     proxy: {
       "/ws": { target: `ws://127.0.0.1:${apiPort}`, ws: true },
       "/health": `http://127.0.0.1:${apiPort}`,
+      "/api": `http://127.0.0.1:${apiPort}`,
     },
   },
   build: {
     target: "es2022",
-    rollupOptions: { output: { manualChunks: { three: ["three"] } } },
+    rollupOptions: {
+      input: { main: "index.html", admin: "admin.html" },
+      output: { manualChunks: { three: ["three"] } },
+    },
   },
 });

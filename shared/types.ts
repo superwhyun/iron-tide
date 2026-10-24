@@ -10,7 +10,27 @@ export type Upgrade =
   | "engine"
   | "accuracy";
 export type Vec2 = { x: number; z: number };
+export type ModuleKind = "turret" | "rudder" | "engine";
+/** Timed boosts from floating supply crates. */
+export type BuffKind = "range" | "firepower" | "armor" | "engine" | "reload";
+export type PickupKind = BuffKind | "repair";
+export interface Pickup extends Vec2 {
+  id: number;
+  kind: PickupKind;
+  expires: number;
+}
 export type Phase = "lobby" | "battle" | "results";
+/** deathmatch: ranked by kills. domination: race to the score limit by holding zones. */
+export type GameMode = "deathmatch" | "domination";
+export interface Zone extends Vec2 {
+  id: string;
+  radius: number;
+  owner: string | null;
+  /** Ship currently taking the zone and its progress 0..1. */
+  capturer: string | null;
+  progress: number;
+  contested: boolean;
+}
 export interface Input {
   throttle: number;
   rudder: number;
@@ -31,6 +51,10 @@ export interface Status {
   heal: number;
   healPool: number;
   protection: number;
+  /** Seconds the steering gear stays jammed at its current angle. */
+  rudderJam: number;
+  /** Seconds the machinery is damaged (half top speed). */
+  engineHit: number;
 }
 export interface Stats {
   damage: number;
@@ -38,6 +62,8 @@ export interface Stats {
   deaths: number;
   shots: number;
   hits: number;
+  /** Domination points: zone holding, captures and kills. */
+  score: number;
 }
 export interface Ship {
   id: string;
@@ -58,7 +84,12 @@ export interface Ship {
   connected: boolean;
   disconnectedAt: number;
   input: Input;
-  turrets: { angle: number; reload: number; offset: number }[];
+  turrets: {
+    angle: number;
+    reload: number;
+    offset: number;
+    disabled?: number;
+  }[];
   torpedoReload: number;
   mineReload: number;
   minesLeft: number;
@@ -73,6 +104,8 @@ export interface Ship {
   points: number;
   upgrades: Record<Upgrade, number>;
   stats: Stats;
+  /** Seconds left on each active supply-crate boost. */
+  buffs: Partial<Record<BuffKind, number>>;
 }
 export interface Projectile {
   id: number;
@@ -130,7 +163,10 @@ export interface GameEvent {
     | "respawn"
     | "level"
     | "ability"
-    | "intercept";
+    | "intercept"
+    | "module"
+    | "capture"
+    | "pickup";
   x: number;
   z: number;
   owner?: string;
@@ -147,6 +183,7 @@ export interface GameEvent {
   turrets?: number[];
   elevation?: number;
   count?: number;
+  module?: ModuleKind;
 }
 export interface Contact extends Vec2 {
   id: string;
@@ -163,16 +200,31 @@ export interface Contact extends Vec2 {
   turrets: { angle: number; offset: number }[];
   fire: number;
   protection: number;
+  buffs: BuffKind[];
 }
 export interface LastSeen extends Vec2 {
   id: string;
   hull: Hull;
   at: number;
 }
+/** Public profile of a wallet-login account (the wallet is shown only to its owner). */
+export interface AccountView {
+  wallet: string;
+  name: string;
+  matches: number;
+  wins: number;
+  kills: number;
+  deaths: number;
+  damage: number;
+}
 export interface Score {
   id: string;
   bot: boolean;
+  /** Signed in with a wallet (as opposed to a guest name). */
+  verified?: boolean;
   npcModel?: NpcModel;
+  /** NPC intelligence 1–5 (lobby only). */
+  skill?: number;
   name: string;
   hull: Hull;
   connected: boolean;
@@ -182,6 +234,7 @@ export interface Score {
   damage?: number;
   level?: number;
   accuracy?: number;
+  score?: number;
 }
 export interface Snapshot {
   type: "snapshot";
@@ -199,6 +252,10 @@ export interface Snapshot {
   events: GameEvent[];
   detected: boolean;
   scores: Score[];
+  mode: GameMode;
+  zones: Zone[];
+  scoreLimit: number;
+  pickups: Pickup[];
 }
 export interface Lobby {
   type: "lobby";
@@ -207,6 +264,7 @@ export interface Lobby {
   phase: Phase;
   players: Score[];
   duration: number;
+  mode: GameMode;
 }
 export type ClientMessage =
   | { type: "create"; name: string }
@@ -215,8 +273,9 @@ export type ClientMessage =
   | { type: "select"; hull: Hull }
   | { type: "ready"; ready: boolean }
   | { type: "start" }
-  | { type: "addBot"; hull: Hull; model?: NpcModel }
+  | { type: "addBot"; hull: Hull; model?: NpcModel; skill?: number }
   | { type: "removeBot"; id: string }
+  | { type: "mode"; mode: GameMode }
   | { type: "input"; input: Input }
   | { type: "salvo" }
   | { type: "ability"; ability: "dcp" | "special" }

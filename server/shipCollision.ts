@@ -10,9 +10,13 @@ import {
 } from "three";
 import { HULLS, NPC_MODELS } from "../shared/config";
 import { deckSurface, hullSurface } from "../shared/hullShape";
+import { SUPERSTRUCTURE_ARMOR } from "../shared/armor";
 import type { Hull, NpcModel, Ship, Vec2 } from "../shared/types";
 
-export type ArmorZone = "side" | "bow" | "deck" | "superstructure" | "turret";
+export type ArmorZone =
+  "side" | "upper" | "bow" | "deck" | "superstructure" | "turret";
+/** The belt only covers the lower part of the freeboard; above it is thin plating. */
+const BELT_TOP = 0.3;
 export interface ShipHit {
   t: number;
   point: Vec2;
@@ -359,14 +363,12 @@ export function intersectShip(
         ? "deck"
         : Math.abs(chosen.normal.z) > Math.abs(chosen.normal.x)
           ? "bow"
-          : "side";
+          : chosen.point.y > mesh.deck * BELT_TOP
+            ? "upper"
+            : "side";
   const armor =
     zone === "superstructure"
-      ? s.hull === "destroyer"
-        ? 13
-        : s.hull === "cruiser"
-          ? 16
-          : 19
+      ? SUPERSTRUCTURE_ARMOR[s.hull]
       : zone === "turret"
         ? cfg.armor.side
         : cfg.armor[zone];

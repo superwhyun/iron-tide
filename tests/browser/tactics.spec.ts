@@ -41,15 +41,32 @@ test("browser armor and spotting: ricochet vs broadside damage, islands and sona
       })
       .toBe(0);
     let cursor = mousePositions.get(b)!;
-    await b.mouse.dblclick(cursor.x, cursor.y);
-    await expect
-      .poll(
-        () =>
-          [...eventLog.get(b)!.values()].some((e) => e.result === "ricochet"),
-        { timeout: 10000 },
-      )
-      .toBe(true);
-    const angledDamage = (await state(b)).self.stats.damage;
+    // Only belt hits can bounce (380 mm overmatches the 19 mm upper side), so
+    // fire angled salvos until one shell ricochets.
+    const ricocheted = () =>
+      [...eventLog.get(b)!.values()].some((e) => e.result === "ricochet");
+    let salvos = 0;
+    for (; salvos < 4 && !ricocheted(); salvos++) {
+      if (salvos)
+        await fixture(room, {
+          players: [{ id: A, heading: 1.055, hp: 27000 }],
+          advance: 13,
+        });
+      const shots = (await state(b)).self.stats.shots;
+      await b.mouse.dblclick(cursor.x, cursor.y);
+      await expect
+        .poll(async () => (await state(b)).self.stats.shots)
+        .toBeGreaterThan(shots);
+      await expect
+        .poll(
+          async () =>
+            (await state(b)).projectiles.filter((p) => p.owner === B).length,
+          { timeout: 10000 },
+        )
+        .toBe(0);
+    }
+    expect(ricocheted()).toBe(true);
+    const angledDamage = (await state(b)).self.stats.damage / salvos;
     // Some shells can still penetrate the thin bow despite angled side armor.
     expect(angledDamage).toBeLessThan(20000);
     await fixture(room, {
@@ -59,7 +76,9 @@ test("browser armor and spotting: ricochet vs broadside damage, islands and sona
     await b.mouse.dblclick(cursor.x, cursor.y);
     await expect
       .poll(async () => (await state(b)).self.stats.damage, { timeout: 10000 })
-      .toBeGreaterThan(angledDamage * 2 + 1000);
+      // Angling only saves the belt now (the upper side is overmatched), so a
+      // broadside salvo must clearly out-damage an average angled one.
+      .toBeGreaterThan(angledDamage * (salvos + 1) + 1000);
     await expect
       .poll(
         async () =>

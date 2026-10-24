@@ -5,6 +5,7 @@ import {
   throttleSpeed,
   UPGRADE_KEYS,
   xpRequired,
+  respawnDelay,
   mainCaliber,
   NPC_MODELS,
 } from "../shared/config";
@@ -34,18 +35,37 @@ import type {
   Upgrade,
   Vec2,
   NpcModel,
+  GameMode,
+  Zone,
+  BuffKind,
 } from "../shared/types";
 import { islandBlocksLine, terrainHeight } from "../shared/terrain";
 import { moveAlongShore, nearShore } from "../shared/navigation";
-import { BotCaptain } from "./bots";
+import { armorOutcome } from "../shared/armor";
+
+/** Minimum share of the normal turn rate available while touching a coast. */
+const GROUNDED_PIVOT = 0.7;
+/** Citadel hits deal this share of the shell's damage (a full share deleted cruisers in two salvos). */
+const CITADEL_SHARE = 0.6;
+import { BotCaptain, isBotSkill, type BotSkill } from "./bots";
+import { breakModule, repairModules, tickModules } from "./modules";
+import { createZones, DOMINATION, updateZones } from "./objectives";
 import { intersectShip, type ShipHit } from "./shipCollision";
 import { Ordnance } from "./ordnance";
 import {
   ORDNANCE,
   aimSolution,
   dispersionRadius,
+  gunRangeFor,
   randomImpact,
 } from "../shared/ballistics";
+import {
+  damageBoost,
+  damageTaken,
+  engineBoost,
+  reloadBoost,
+} from "../shared/powerups";
+import { SupplyDrops, tickBuffs } from "./pickups";
 
 export function makeShip(
   id: string,
@@ -102,6 +122,8 @@ export function makeShip(
       heal: 0,
       healPool: 0,
       protection: 0,
+      rudderJam: 0,
+      engineHit: 0,
     },
     bloom: 0,
     level: 1,
@@ -116,16 +138,16 @@ export function makeShip(
       engine: 0,
       accuracy: 0,
     },
-    stats: { damage: 0, kills: 0, deaths: 0, shots: 0, hits: 0 },
+    stats: { damage: 0, kills: 0, deaths: 0, shots: 0, hits: 0, score: 0 },
+    buffs: {},
   };
 }
-export const gunRange = (s: Ship) =>
-  HULLS[s.hull].range * (1 + 0.08 * s.upgrades.range);
+export const gunRange = gunRangeFor;
 export const gunReload = (s: Ship) =>
-  HULLS[s.hull].reload * (1 - 0.07 * s.upgrades.reload);
+  HULLS[s.hull].reload * (1 - 0.07 * s.upgrades.reload) * reloadBoost(s);
 export function canTurretFire(s: Ship, i: number) {
   const t = s.turrets[i];
-  if (!t || t.reload > 0 || !s.alive) return false;
+  if (!t || t.reload > 0 || (t.disabled ?? 0) > 0 || !s.alive) return false;
   const wanted = bearing(s, s.input.aim),
     relative = Math.abs(angleDiff(wanted, s.heading));
   return (
@@ -150,23 +172,26 @@ export function resolveArmor(
     };
   const cfg = HULLS[target.hull],
     p = localPoint(point, target),
-    side = surface
+    belt = surface
       ? surface.zone === "side"
-      : Math.abs(p.z) < cfg.length * 0.36;
+      : Math.abs(p.z) < cfg.length * 0.36,
+    side = belt || surface?.zone === "upper";
   const deck = surface ? surface.zone === "deck" : vertical < -0.4;
   const armor =
     surface?.armor ??
     (deck ? cfg.armor.deck : side ? cfg.armor.side : cfg.armor.bow);
-  if (kind === "HE" || kind === "SECONDARY")
+  if (kind === "HE" || kind === "SECONDARY") {
+    const pierced = armorOutcome("HE", caliber, armor, 0) === "penetration";
     return {
       result:
         kind === "SECONDARY"
           ? "secondary"
-          : caliber / 6 >= armor
+          : pierced
             ? "penetration"
             : "shatter",
-      damage: caliber / 6 >= armor ? damage * 0.33 : 0,
+      damage: pierced ? damage * 0.33 : 0,
     };
+  }
   const incoming = Math.atan2(velocity.x, velocity.z),
     normal = deck ? 0 : target.heading + (side ? Math.PI / 2 : 0);
   const horizontal = Math.hypot(velocity.x, velocity.z) || 1;
@@ -181,34 +206,46 @@ export function resolveArmor(
     : deck
       ? Math.acos(clamp(Math.abs(vertical), 0, 1))
       : Math.acos(clamp(Math.abs(Math.cos(incoming - normal)), 0, 1));
-  if (kind === "SAP") {
-    if (angle > Math.PI * 0.42) return { result: "ricochet", damage: 0 };
-    return caliber * 0.22 >= armor
-      ? { result: "penetration", damage: damage * 0.5 }
-      : { result: "shatter", damage: 0 };
-  }
-  const overmatch = caliber > armor * 14.3;
-  if (!overmatch && angle > Math.PI / 3)
-    return { result: "ricochet", damage: 0 };
-  const effective =
-      armor / Math.max(0.15, Math.cos(Math.max(0, angle - Math.PI / 36))),
-    penetration = caliber * 1.25;
-  if (penetration < effective) return { result: "shatter", damage: 0 };
-  if (armor < caliber / 12) return { result: "overpen", damage: damage * 0.1 };
+  // Anything that is not SAP follows the AP rules, as before.
+  const outcome = armorOutcome(
+    kind === "SAP" ? "SAP" : "AP",
+    caliber,
+    armor,
+    angle,
+  );
+  if (outcome === "ricochet" || outcome === "shatter")
+    return { result: outcome, damage: 0 };
+  if (kind === "SAP") return { result: "penetration", damage: damage * 0.5 };
+  if (outcome === "overpen") return { result: "overpen", damage: damage * 0.1 };
+  // Magazines and machinery sit behind the waterline belt, not the upper plating.
   if (
-    side &&
+    belt &&
     !deck &&
     target.hull !== "destroyer" &&
     Math.abs(p.z) < cfg.length * 0.26
   )
-    return { result: "citadel", damage };
+    return { result: "citadel", damage: damage * CITADEL_SHARE };
   return { result: "penetration", damage: damage * 0.33 };
 }
+
+export interface CombatLedger {
+  player: { kills: number; damage: number };
+  /** Index 0–4 = NPC skill 1–5. */
+  npc: { kills: number[]; damage: number[] };
+}
+export const emptyLedger = (): CombatLedger => ({
+  player: { kills: 0, damage: 0 },
+  npc: { kills: [0, 0, 0, 0, 0], damage: [0, 0, 0, 0, 0] },
+});
 
 export class Game {
   players = new Map<string, Ship>();
   ready = new Set<string>();
   phase: Phase = "lobby";
+  mode: GameMode = "deathmatch";
+  /** Player id → wallet account id, for players who signed in. */
+  accounts = new Map<string, string>();
+  zones: Zone[] = [];
   time = 0;
   remaining: number;
   projectiles: Projectile[] = [];
@@ -219,6 +256,7 @@ export class Game {
   private botSerial = 0;
   private captains = new Map<string, BotCaptain>();
   ordnance = new Ordnance(this);
+  supply = new SupplyDrops(this);
   get mines() {
     return this.ordnance.mines;
   }
@@ -228,6 +266,8 @@ export class Game {
   private lastSeen = new Map<string, Map<string, LastSeen>>();
   private dotOwners = new Map<string, { fire: string[]; flood: string }>();
   private damageCredit = new Map<string, Map<string, number>>();
+  /** Per-match tally for CGC rewards: kills and damage split by victim type. */
+  readonly ledger = new Map<string, CombatLedger>();
   constructor(
     public code: string,
     public duration = RULES.duration,
@@ -235,23 +275,30 @@ export class Game {
   ) {
     this.remaining = duration;
   }
-  add(id: string, name: string) {
+  add(id: string, name: string, account?: string) {
     if (this.phase !== "lobby")
       throw Error("이미 출항한 함대입니다. 다음 경기에 참가해 주세요.");
     if (this.players.size >= RULES.maxPlayers)
       throw Error("함대 정원은 4명입니다.");
     const s = makeShip(id, name);
     this.players.set(id, s);
+    if (account) this.accounts.set(id, account);
     if (!this.host) this.host = id;
     return s;
   }
-  addBot(host: string, hull: Hull, model: NpcModel = "camouflage") {
+  addBot(
+    host: string,
+    hull: Hull,
+    model: NpcModel = "camouflage",
+    skill: BotSkill = 5,
+  ) {
     if (host !== this.host) throw Error("함대장만 NPC를 추가할 수 있습니다.");
     if (!Object.hasOwn(HULLS, hull)) throw Error("잘못된 함종입니다.");
     if (!Object.hasOwn(NPC_MODELS, model))
       throw Error("잘못된 NPC 모델입니다.");
     if (model === "wisconsin-golden" && hull !== "battleship")
       throw Error("Wisconsin Golden은 전함입니다.");
+    if (!isBotSkill(skill)) throw Error("NPC 지능은 1–5 단계입니다.");
     const number = ++this.botSerial,
       id = `npc-${number}`;
     const ship = this.add(
@@ -266,8 +313,17 @@ export class Game {
       npcModel: model,
     });
     this.ready.add(id);
-    this.captains.set(id, new BotCaptain(id, number));
+    this.captains.set(id, new BotCaptain(id, number, skill));
     return id;
+  }
+  setMode(host: string, mode: GameMode) {
+    if (host !== this.host)
+      throw Error("함대장만 경기 방식을 바꿀 수 있습니다.");
+    if (this.phase !== "lobby")
+      throw Error("출항 전에만 경기 방식을 바꿀 수 있습니다.");
+    if (mode !== "deathmatch" && mode !== "domination")
+      throw Error("알 수 없는 경기 방식입니다.");
+    this.mode = mode;
   }
   removeBot(host: string, id: string) {
     if (host !== this.host) throw Error("함대장만 NPC를 제외할 수 있습니다.");
@@ -279,6 +335,7 @@ export class Game {
   }
   remove(id: string) {
     this.players.delete(id);
+    this.accounts.delete(id);
     this.captains.delete(id);
     this.ready.delete(id);
     this.lastSeen.delete(id);
@@ -315,9 +372,12 @@ export class Game {
     this.smokes = [];
     this.lastSeen.clear();
     this.damageCredit.clear();
+    this.ledger.clear();
     this.dotOwners.clear();
     this.loadedAmmo.clear();
     this.ordnance.reset();
+    this.zones = this.mode === "domination" ? createZones() : [];
+    this.supply.reset();
     let i = 0;
     for (const [key, old] of this.players) {
       const s = {
@@ -384,6 +444,7 @@ export class Game {
     s.alive = true;
     s.respawnAt = 0;
     s.bloom = 0;
+    s.buffs = {};
     s.input = {
       throttle: 1,
       rudder: 0,
@@ -418,6 +479,8 @@ export class Game {
       heal: 0,
       healPool: 0,
       protection: 3,
+      rudderJam: 0,
+      engineHit: 0,
     };
     this.dotOwners.delete(s.id);
     this.damageCredit.delete(s.id);
@@ -497,6 +560,7 @@ export class Game {
       if (s.status.dcp > 0) return false;
       s.status.fire = [0, 0];
       s.status.flood = 0;
+      repairModules(s);
       s.status.immune = 5;
       s.status.dcp = 45;
       this.dotOwners.delete(id);
@@ -571,7 +635,7 @@ export class Game {
           origin,
           s.input.aim,
           s.input.weapon,
-          c.shellDamage * (1 - 0.08 * s.upgrades.salvo),
+          c.shellDamage * (1 - 0.08 * s.upgrades.salvo) * damageBoost(s),
           mainCaliber(s),
           c.shellSpeed,
           gunRange(s),
@@ -703,6 +767,7 @@ export class Game {
       Vec2,
   ) {
     if (!target.alive || target.status.protection > 0 || amount <= 0) return 0;
+    amount *= damageTaken(target);
     const actual = Math.min(target.hp, amount);
     target.hp -= actual;
     target.status.healPool = Math.min(
@@ -713,6 +778,7 @@ export class Game {
     const owner = this.players.get(ownerId);
     if (owner && owner.id !== target.id) {
       this.award(owner, actual);
+      this.tally(owner.id, target, "damage", actual);
       let credit = this.damageCredit.get(target.id);
       if (!credit) {
         credit = new Map();
@@ -733,11 +799,14 @@ export class Game {
       });
     if (target.hp <= 0) {
       target.alive = false;
-      target.respawnAt = this.time + RULES.respawn;
-      target.input.firing = false;
       target.stats.deaths++;
+      target.respawnAt = this.time + respawnDelay(target.stats.deaths);
+      target.input.firing = false;
       if (owner && owner.id !== target.id) {
         owner.stats.kills++;
+        this.tally(owner.id, target, "kills", 1);
+        if (this.mode === "domination")
+          owner.stats.score += DOMINATION.killPoints;
         this.award(owner, 500, false);
       }
       for (const [id, contribution] of this.damageCredit.get(target.id) ?? [])
@@ -820,7 +889,8 @@ export class Game {
         dot = { fire: ["", ""], flood: "" };
         this.dotOwners.set(target.id, dot);
       }
-      if (p.kind === "HE" || p.kind === "SECONDARY") {
+      // A shell that shattered or bounced never reached anything flammable.
+      if ((p.kind === "HE" || p.kind === "SECONDARY") && resolved.damage > 0) {
         const slot = localPoint(point, target).z > 0 ? 0 : 1;
         if (
           target.status.fire[slot] <= 0 &&
@@ -837,6 +907,27 @@ export class Game {
       ) {
         target.status.flood = 22;
         dot.flood = p.owner;
+      }
+      if (resolved.damage > 0) {
+        const broken = breakModule(
+          target,
+          {
+            kind: p.kind,
+            result: resolved.result,
+            zone: contact.zone,
+            along: localPoint(point, target).z,
+          },
+          this.random,
+        );
+        if (broken)
+          this.emit({
+            type: "module",
+            x: target.x,
+            z: target.z,
+            owner: p.owner,
+            target: target.id,
+            module: broken,
+          });
       }
     }
   }
@@ -914,22 +1005,31 @@ export class Game {
           throttleSpeed[s.input.throttle] *
           c.speed *
           (1 + 0.05 * s.upgrades.engine) *
-          (st.flood > 0 ? 0.7 : 1);
+          (st.flood > 0 ? 0.7 : 1) *
+          (st.engineHit > 0 ? 0.5 : 1) *
+          engineBoost(s);
       s.speed += clamp(
         targetSpeed - s.speed,
         -c.accel * engine * dt,
         c.accel * engine * dt,
       );
-      s.turn += clamp(s.input.rudder - s.turn, -dt * 0.7, dt * 0.7);
+      tickModules(s, dt);
+      tickBuffs(s, dt);
+      // A jammed steering gear holds whatever rudder angle it had.
+      if (st.rudderJam <= 0)
+        s.turn += clamp(s.input.rudder - s.turn, -dt * 0.7, dt * 0.7);
       s.heading -=
         s.turn *
         c.turn *
         engine *
+        engineBoost(s) *
         Math.min(
           1,
           Math.max(
             Math.abs(s.speed) / 7,
-            nearShore(s) && s.input.throttle !== 1 ? 0.45 : 0,
+            // Tugs-style pivot so a grounded ship can always swing its bow clear,
+            // even with engines stopped.
+            s.grounded || nearShore(s) ? GROUNDED_PIVOT : 0,
           ),
         ) *
         dt *
@@ -941,6 +1041,7 @@ export class Game {
       moveAlongShore(s, next);
       for (const t of s.turrets) {
         t.reload = Math.max(0, t.reload - dt);
+        if ((t.disabled ?? 0) > 0) continue;
         const wanted = bearing(s, s.input.aim),
           relative = angleDiff(wanted, s.heading);
         let constrained = relative;
@@ -1099,10 +1200,54 @@ export class Game {
       return true;
     });
     this.ordnance.tick();
+    this.supply.tick();
+    if (this.mode === "domination") this.updateObjectives(dt);
     if (this.remaining <= 0) {
       this.phase = "results";
       for (const s of this.players.values()) s.input.firing = false;
     }
+  }
+  private updateObjectives(dt: number) {
+    const ships = [...this.players.values()];
+    for (const { zone, by } of updateZones(this.zones, ships, dt))
+      this.emit({
+        type: "capture",
+        x: zone.x,
+        z: zone.z,
+        owner: by.id,
+        text: zone.id,
+      });
+    if (ships.some((s) => s.stats.score >= DOMINATION.scoreLimit))
+      this.remaining = 0;
+  }
+  /** NPC skill (1–5) of a bot ship; undefined for people. */
+  botSkill(id: string): BotSkill | undefined {
+    return this.captains.get(id)?.skill;
+  }
+  private tally(
+    ownerId: string,
+    target: Ship,
+    field: "kills" | "damage",
+    amount: number,
+  ) {
+    if (this.phase !== "battle") return;
+    let entry = this.ledger.get(ownerId);
+    if (!entry) {
+      entry = emptyLedger();
+      this.ledger.set(ownerId, entry);
+    }
+    const skill = this.botSkill(target.id);
+    if (skill) entry.npc[field][skill - 1] += amount;
+    else entry.player[field] += amount;
+  }
+  /** Final order: score (domination), then kills, then damage dealt. */
+  ranking() {
+    return [...this.players.values()].sort(
+      (a, b) =>
+        (this.mode === "domination" ? b.stats.score - a.stats.score : 0) ||
+        b.stats.kills - a.stats.kills ||
+        b.stats.damage - a.stats.damage,
+    );
   }
   lobby(): Lobby {
     return {
@@ -1114,6 +1259,8 @@ export class Game {
         id: s.id,
         bot: s.bot,
         npcModel: s.npcModel,
+        skill: this.captains.get(s.id)?.skill,
+        verified: this.accounts.has(s.id),
         name: s.name,
         hull: s.hull,
         ready: this.ready.has(s.id),
@@ -1122,6 +1269,7 @@ export class Game {
         deaths: s.stats.deaths,
       })),
       duration: this.duration,
+      mode: this.mode,
     };
   }
   snapshot(id: string): Snapshot {
@@ -1160,6 +1308,7 @@ export class Game {
         turrets: s.turrets.map((t) => ({ angle: t.angle, offset: t.offset })),
         fire: s.status.fire.filter((f) => f > 0).length,
         protection: s.status.protection,
+        buffs: Object.keys(s.buffs) as BuffKind[],
       };
     });
     const projectiles = this.projectiles
@@ -1225,6 +1374,8 @@ export class Game {
           ready: false,
           kills: s.stats.kills,
           deaths: s.stats.deaths,
+          score: Math.floor(s.stats.score),
+          verified: this.accounts.has(s.id),
           ...(this.phase === "results"
             ? {
                 damage: Math.round(s.stats.damage),
@@ -1233,7 +1384,16 @@ export class Game {
               }
             : {}),
         }))
-        .sort((a, b) => b.kills - a.kills || (b.damage ?? 0) - (a.damage ?? 0)),
+        .sort(
+          (a, b) =>
+            (this.mode === "domination" ? b.score - a.score : 0) ||
+            b.kills - a.kills ||
+            (b.damage ?? 0) - (a.damage ?? 0),
+        ),
+      mode: this.mode,
+      zones: this.zones.map((z) => ({ ...z })),
+      scoreLimit: DOMINATION.scoreLimit,
+      pickups: this.supply.items.map((p) => ({ ...p })),
     };
   }
 }

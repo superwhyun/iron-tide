@@ -7,7 +7,8 @@ import {
   intercept,
   segmentDistance,
 } from "../shared/math";
-import type { Ship, Vec2 } from "../shared/types";
+import { gunRangeFor } from "../shared/ballistics";
+import type { Ship, Vec2, Zone } from "../shared/types";
 import type { Game } from "./game";
 
 const CELL = 85,
@@ -94,6 +95,91 @@ export function navigationPath(
   return [];
 }
 
+export type BotSkill = 1 | 2 | 3 | 4 | 5;
+export const BOT_SKILLS: BotSkill[] = [1, 2, 3, 4, 5];
+interface SkillProfile {
+  /** Seconds between decisions (reaction time). */
+  think: number;
+  /** Max fractional error when judging the target's speed for the lead. */
+  lead: number;
+  /** Max heading misread of the target, radians. */
+  heading: number;
+  /** Aim scatter radius as a fraction of range. */
+  scatter: number;
+  /** Share of gun range at which it opens fire. */
+  range: number;
+  torpedoes: boolean;
+  dodge: boolean;
+  repair: boolean;
+  special: boolean;
+  gadgets: boolean;
+}
+// Level 5 is the original captain: instant, perfect lead and full equipment use.
+const SKILL: Record<BotSkill, SkillProfile> = {
+  1: {
+    think: 0.9,
+    lead: 0.7,
+    heading: 0.5,
+    scatter: 0.05,
+    range: 0.6,
+    torpedoes: false,
+    dodge: false,
+    repair: false,
+    special: false,
+    gadgets: false,
+  },
+  2: {
+    think: 0.7,
+    lead: 0.5,
+    heading: 0.35,
+    scatter: 0.035,
+    range: 0.7,
+    torpedoes: true,
+    dodge: false,
+    repair: true,
+    special: false,
+    gadgets: false,
+  },
+  3: {
+    think: 0.5,
+    lead: 0.32,
+    heading: 0.22,
+    scatter: 0.022,
+    range: 0.8,
+    torpedoes: true,
+    dodge: true,
+    repair: true,
+    special: true,
+    gadgets: false,
+  },
+  4: {
+    think: 0.35,
+    lead: 0.15,
+    heading: 0.1,
+    scatter: 0.01,
+    range: 0.9,
+    torpedoes: true,
+    dodge: true,
+    repair: true,
+    special: true,
+    gadgets: true,
+  },
+  5: {
+    think: 0.25,
+    lead: 0,
+    heading: 0,
+    scatter: 0,
+    range: 0.95,
+    torpedoes: true,
+    dodge: true,
+    repair: true,
+    special: true,
+    gadgets: true,
+  },
+};
+export const isBotSkill = (value: unknown): value is BotSkill =>
+  BOT_SKILLS.includes(value as BotSkill);
+
 const PATROL: Vec2[] = [
   { x: -600, z: -600 },
   { x: 600, z: -600 },
@@ -110,8 +196,32 @@ export class BotCaptain {
   constructor(
     private id: string,
     private seed: number,
+    readonly skill: BotSkill = 5,
   ) {
     this.reset();
+  }
+  private get profile() {
+    return SKILL[this.skill];
+  }
+  /** Where the captain believes the target will be; imperfect below level 5. */
+  private judgeLead(game: Game, ship: Ship, target: Ship, speed: number) {
+    const p = this.profile;
+    if (!p.lead && !p.heading && !p.scatter)
+      return intercept(ship, target, target.heading, target.speed, speed);
+    const spread = () => game.random() * 2 - 1;
+    const aim = intercept(
+      ship,
+      target,
+      target.heading + spread() * p.heading,
+      target.speed * (1 + spread() * p.lead),
+      speed,
+    );
+    const radius = dist(ship, target) * p.scatter * Math.sqrt(game.random()),
+      angle = game.random() * Math.PI * 2;
+    return {
+      x: aim.x + Math.cos(angle) * radius,
+      z: aim.z + Math.sin(angle) * radius,
+    };
   }
   reset() {
     this.decision = 0;
@@ -121,10 +231,24 @@ export class BotCaptain {
     this.target = "";
     this.patrol = this.seed % PATROL.length;
   }
+  /** Nearest zone we do not hold; otherwise the nearest of ours under threat. */
+  private pickZone(game: Game, ship: Ship): Zone | null {
+    const byDistance = [...game.zones].sort(
+      (a, b) => dist(ship, a) - dist(ship, b),
+    );
+    return (
+      byDistance.find((z) => z.owner !== ship.id) ??
+      byDistance.find(
+        (z) => z.contested || (z.capturer && z.capturer !== ship.id),
+      ) ??
+      byDistance[0] ??
+      null
+    );
+  }
   update(game: Game, dt: number) {
     this.decision -= dt;
     if (this.decision > 0) return;
-    this.decision = 0.25;
+    this.decision = this.profile.think;
     const ship = game.players.get(this.id);
     if (!ship?.alive) {
       this.route = [];
@@ -144,7 +268,14 @@ export class BotCaptain {
       goal = PATROL[this.patrol];
     }
     let desired: number | null = null;
-    if (target) {
+    const zone = game.mode === "domination" ? this.pickZone(game, ship) : null;
+    if (zone) {
+      // Objectives first: sail to the zone and circle inside it; guns still fire.
+      goal = zone;
+      if (dist(ship, zone) < zone.radius * 0.7)
+        desired =
+          bearing(ship, zone) + (this.seed % 2 ? 1 : -1) * (Math.PI / 2 + 0.25);
+    } else if (target) {
       const d = dist(ship, target),
         preferred =
           ship.hull === "destroyer" ? 360 : ship.hull === "cruiser" ? 460 : 620;
@@ -155,6 +286,17 @@ export class BotCaptain {
           bearing(ship, target) +
           direction * (Math.PI / 2 + clamp((preferred - d) / 300, -0.5, 0.7));
       }
+    }
+    // Capable captains detour for a nearby supply crate.
+    const crateReach = zone ? 200 : 350;
+    const crate = this.profile.special
+      ? game.supply.items
+          .filter((c) => dist(ship, c) < crateReach)
+          .sort((a, b) => dist(ship, a) - dist(ship, b))[0]
+      : undefined;
+    if (crate) {
+      goal = crate;
+      desired = null;
     }
     const margin = cfg.length * 0.35 + 32;
     if (desired === null) {
@@ -198,18 +340,21 @@ export class BotCaptain {
       -1,
       1,
     );
-    const threat = game.projectiles.find(
-      (p) =>
-        p.kind === "TORP" &&
-        p.owner !== ship.id &&
-        dist(ship, p) < 180 &&
-        (ship.x - p.x) * p.vx + (ship.z - p.z) * p.vz > 0,
-    );
+    const skill = this.profile;
+    const threat = !skill.dodge
+      ? undefined
+      : game.projectiles.find(
+          (p) =>
+            p.kind === "TORP" &&
+            p.owner !== ship.id &&
+            dist(ship, p) < 180 &&
+            (ship.x - p.x) * p.vx + (ship.z - p.z) * p.vz > 0,
+        );
     if (threat)
       rudder =
         Math.sin(angleDiff(bearing(ship, threat), ship.heading)) > 0 ? 1 : -1;
     const aim = target
-      ? intercept(ship, target, target.heading, target.speed, cfg.shellSpeed)
+      ? this.judgeLead(game, ship, target, cfg.shellSpeed)
       : goal;
     game.setInput(ship.id, {
       throttle:
@@ -220,7 +365,12 @@ export class BotCaptain {
       weapon: "HE",
       firing: false,
     });
-    if (threat && ship.rocketReload <= 0 && ship.rocketsLeft > 0) {
+    if (
+      skill.gadgets &&
+      threat &&
+      ship.rocketReload <= 0 &&
+      ship.rocketsLeft > 0
+    ) {
       const saved = { ...ship.input },
         flight = dist(ship, threat) / 170;
       game.setInput(ship.id, {
@@ -235,6 +385,7 @@ export class BotCaptain {
       game.setInput(ship.id, saved);
     }
     if (
+      skill.gadgets &&
       target &&
       dist(ship, target) < 180 &&
       ship.minesLeft > 0 &&
@@ -245,22 +396,19 @@ export class BotCaptain {
       game.fire(ship.id);
       game.setInput(ship.id, saved);
     }
-    if (
-      target &&
-      dist(ship, target) < cfg.range * (1 + ship.upgrades.range * 0.08) * 0.95
-    )
+    if (target && dist(ship, target) < gunRangeFor(ship) * skill.range)
       game.fire(ship.id, true);
     if (
+      skill.torpedoes &&
       target &&
       cfg.torpedo &&
       ship.torpedoReload <= 0 &&
       dist(ship, target) < cfg.torpedoRange * 0.82
     ) {
-      const torpedoAim = intercept(
+      const torpedoAim = this.judgeLead(
+        game,
         ship,
         target,
-        target.heading,
-        target.speed,
         45 * (1 + 0.08 * ship.upgrades.torpedo),
       );
       const relative = Math.abs(
@@ -277,16 +425,20 @@ export class BotCaptain {
       }
     }
     if (
-      ship.status.flood > 0 ||
-      ship.status.fire.filter((f) => f > 0).length > 1 ||
-      (ship.hp < ship.maxHp * 0.4 && ship.status.fire.some((f) => f > 0))
+      skill.repair &&
+      (ship.status.flood > 0 ||
+        ship.status.rudderJam > 0 ||
+        ship.status.engineHit > 0 ||
+        ship.status.fire.filter((f) => f > 0).length > 1 ||
+        (ship.hp < ship.maxHp * 0.4 && ship.status.fire.some((f) => f > 0)))
     )
       game.ability(ship.id, "dcp");
     if (
-      (ship.hull === "battleship" && ship.hp < ship.maxHp * 0.75) ||
-      (ship.hull === "destroyer" && target && ship.hp < ship.maxHp * 0.5) ||
-      (ship.hull === "cruiser" &&
-        ((target && dist(ship, target) < 430) || threat))
+      skill.special &&
+      ((ship.hull === "battleship" && ship.hp < ship.maxHp * 0.75) ||
+        (ship.hull === "destroyer" && target && ship.hp < ship.maxHp * 0.5) ||
+        (ship.hull === "cruiser" &&
+          ((target && dist(ship, target) < 430) || threat)))
     )
       game.ability(ship.id, "special");
     if (ship.points) {

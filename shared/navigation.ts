@@ -24,6 +24,15 @@ function coast(island: Island, p: Vec2, padding: number) {
     gradient: length,
   };
 }
+const SHORE_SLIDE = 0.6;
+/** Coast tangent pointing where the bow is (or is turning) headed. */
+function slideDirection(s: Ship, normal: { x: number; z: number }) {
+  const intended = s.heading - s.turn * 0.6 * (s.speed < 0 ? -1 : 1),
+    dx = Math.sin(intended) * Math.sign(s.speed || 1),
+    dz = Math.cos(intended) * Math.sign(s.speed || 1);
+  const sign = normal.z * dx - normal.x * dz >= 0 ? 1 : -1;
+  return { x: normal.z * sign, z: -normal.x * sign };
+}
 export function nearShore(s: Pick<Ship, "x" | "z" | "hull">) {
   return ISLANDS.some(
     (i) => coast(i, s, HULLS[s.hull].length * 0.35).gap < 0.75,
@@ -44,6 +53,11 @@ export function moveAlongShore(s: Ship, next: Vec2) {
     if (current.gap < 0.75 && inward < 0) {
       next.x -= current.x * inward;
       next.z -= current.z * inward;
+      // Part of the blocked thrust scrapes the hull along the coast toward the
+      // side the rudder is turning, so ramming head-on does not pin the ship.
+      const slide = slideDirection(s, current);
+      next.x += slide.x * -inward * SHORE_SLIDE;
+      next.z += slide.z * -inward * SHORE_SLIDE;
       blocked = true;
     }
     // Recover overlaps too (e.g. another ship pushes us onto the coast).

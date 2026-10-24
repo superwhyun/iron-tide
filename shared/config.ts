@@ -47,7 +47,8 @@ export interface HullConfig {
   barrels: number;
   turrets: number[];
   turretSpeed: number;
-  armor: { bow: number; side: number; deck: number };
+  /** side = waterline belt, upper = thin plating between belt and deck. */
+  armor: { bow: number; side: number; upper: number; deck: number };
   torpedo: boolean;
   torpedoDamage: number;
   torpedoReload: number;
@@ -77,7 +78,7 @@ export const HULLS: Record<Hull, HullConfig> = {
     barrels: 2,
     turrets: [14, -13],
     turretSpeed: 0.9,
-    armor: { bow: 13, side: 19, deck: 13 },
+    armor: { bow: 13, side: 19, upper: 13, deck: 13 },
     torpedo: true,
     torpedoDamage: 7500,
     torpedoReload: 24,
@@ -106,7 +107,7 @@ export const HULLS: Record<Hull, HullConfig> = {
     barrels: 3,
     turrets: [20, 10, -18],
     turretSpeed: 0.57,
-    armor: { bow: 25, side: 100, deck: 30 },
+    armor: { bow: 25, side: 100, upper: 19, deck: 30 },
     torpedo: true,
     torpedoDamage: 6500,
     torpedoReload: 32,
@@ -135,7 +136,7 @@ export const HULLS: Record<Hull, HullConfig> = {
     barrels: 3,
     turrets: [27, 15, -24],
     turretSpeed: 0.33,
-    armor: { bow: 32, side: 260, deck: 50 },
+    armor: { bow: 32, side: 260, upper: 32, deck: 50 },
     torpedo: false,
     torpedoDamage: 0,
     torpedoReload: 0,
@@ -188,6 +189,9 @@ export const UPGRADE_INFO: Record<
   },
 };
 export const UPGRADE_KEYS = Object.keys(UPGRADE_INFO) as Upgrade[];
+/** Each sinking in a match waits 5 s longer to respawn, capped at 20 s. */
+export const respawnDelay = (deaths: number) =>
+  Math.min(20, RULES.respawn + 5 * Math.max(0, deaths - 1));
 export const xpRequired = (level: number) => 1600 + (level - 1) * 900;
 export const throttleSpeed = [-0.3, 0, 0.25, 0.5, 0.75, 1];
 export const THROTTLE_LABELS = ["후진", "정지", "¼", "½", "¾", "전속"];

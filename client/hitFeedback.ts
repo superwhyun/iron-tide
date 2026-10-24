@@ -11,7 +11,8 @@ const names: Record<HitResult, string> = {
   protected: "재출격 보호",
 };
 const zones: Record<string, string> = {
-  side: "측면",
+  side: "주장갑대",
+  upper: "상부 측면",
   bow: "선수·함미",
   deck: "갑판",
   superstructure: "상부 구조물",

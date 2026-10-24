@@ -501,6 +501,11 @@ export class AudioBus {
       g.disconnect();
     };
   }
+  /** Rising two-note chime for collecting a supply crate. */
+  pickup() {
+    this.tone(660, 0.18, 0.07);
+    setTimeout(() => this.tone(990, 0.28, 0.07), 110);
+  }
   warning() {
     if (performance.now() - this.lastWarning < 1200) return;
     this.lastWarning = performance.now();

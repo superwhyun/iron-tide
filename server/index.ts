@@ -4,7 +4,20 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { Game } from "./game";
+import { emptyLedger, Game } from "./game";
+import type { BotSkill } from "./bots";
+import { AccountStore, type Account } from "./accounts";
+import { WalletAuth } from "./walletAuth";
+import { MetanomicClient, metanomicConfig } from "./metanomic";
+import { RewardQueue } from "./rewardQueue";
+import { AutoRewards } from "./autoRewards";
+import { AdminSetup, createAdminRoutes } from "./adminRoutes";
+import {
+  cleanName,
+  createAuthRoutes,
+  readCookie,
+  SESSION_COOKIE,
+} from "./authRoutes";
 import { RULES, HULLS, UPGRADE_KEYS } from "../shared/config";
 import type {
   ClientMessage,
@@ -16,6 +29,71 @@ import type {
 const port = Number(process.env.PORT ?? 3000),
   root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
 const rooms = new Map<string, Game>();
+// Wallet accounts persist across restarts; ACCOUNT_DB=":memory:" for throwaway runs.
+const accounts = new AccountStore(
+  process.env.ACCOUNT_DB ??
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../data/iron-tide.sqlite",
+    ),
+);
+// Chain named in the sign-in message; Ronin Saigon testnet unless configured.
+const chainId = Number(process.env.GAME_CHAIN_ID ?? 2021);
+const walletAuth = new WalletAuth(accounts, chainId);
+const authRoutes = createAuthRoutes(accounts, walletAuth);
+// CGC rewards are paid only when the Metanomic game credentials are configured.
+const metanomicSettings = metanomicConfig();
+const metanomic = metanomicSettings
+  ? new MetanomicClient(metanomicSettings)
+  : null;
+const rewardQueue = new RewardQueue(accounts.db, metanomic);
+const autoRewards = new AutoRewards(accounts, rewardQueue, metanomic);
+const adminSetup = new AdminSetup(accounts);
+const adminRoutes = createAdminRoutes(
+  accounts,
+  walletAuth,
+  adminSetup,
+  rewardQueue,
+  metanomic,
+  autoRewards,
+);
+/** Matches already written to account records, so results are counted once. */
+const recorded = new WeakSet<Game>();
+function recordResults(g: Game) {
+  const ranking = g.ranking();
+  const match = accounts.saveMatch(
+    g.code,
+    g.mode,
+    ranking.map((ship, place) => {
+      const npcSkill = g.botSkill(ship.id);
+      return {
+        accountId: g.accounts.get(ship.id) ?? null,
+        name: ship.name,
+        hull: ship.hull,
+        place: place + 1,
+        kills: ship.stats.kills,
+        deaths: ship.stats.deaths,
+        damage: Math.round(ship.stats.damage),
+        score: Math.floor(ship.stats.score),
+        ...(npcSkill ? { npcSkill } : {}),
+        ledger: g.ledger.get(ship.id) ?? emptyLedger(),
+      };
+    }),
+    Math.round(g.time),
+  );
+  ranking.forEach((ship, place) => {
+    const account = g.accounts.get(ship.id);
+    if (!account) return;
+    accounts.recordMatch(account, {
+      kills: ship.stats.kills,
+      deaths: ship.stats.deaths,
+      damage: ship.stats.damage,
+      won: place === 0,
+    });
+  });
+  // Failures are logged inside settle(); the match itself is already saved.
+  void autoRewards.settle(match).catch(() => {});
+}
 type Session = {
   id: string;
   token: string;
@@ -78,6 +156,8 @@ const server = http.createServer(async (req, res) => {
     );
     return;
   }
+  if (await adminRoutes(req, res)) return;
+  if (await authRoutes(req, res)) return;
   // Test-only fixture control: absent unless explicitly enabled, protected by a per-run secret.
   if (
     process.env.NODE_ENV !== "production" &&
@@ -158,9 +238,8 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
-    const file = path.extname(candidate)
-        ? candidate
-        : path.join(root, "index.html"),
+    const page = pathname === "/admin" ? "admin.html" : "index.html";
+    const file = path.extname(candidate) ? candidate : path.join(root, page),
       data = await readFile(file);
     const mime: Record<string, string> = {
       ".html": "text/html; charset=utf-8",
@@ -208,6 +287,10 @@ wss.on("connection", (ws, req) => {
   }
   let current: Session | undefined;
   let preAuthCount = 0;
+  // The wallet session cookie travels with the WebSocket upgrade request.
+  const account: Account | undefined = accounts.accountForToken(
+    readCookie(req.headers.cookie, SESSION_COOKIE),
+  );
   ws.on("message", (raw) => {
     try {
       const m = JSON.parse(raw.toString()) as ClientMessage;
@@ -279,7 +362,13 @@ wss.on("connection", (ws, req) => {
         }
         const id = randomBytes(6).toString("hex"),
           token = randomBytes(24).toString("hex");
-        g.add(id, nameOf(m.name));
+        // Signed-in captains keep their account name unless they type a new one.
+        const typed = cleanName(m.name);
+        if (account && typed && typed !== account.name) {
+          accounts.rename(account.id, typed);
+          account.name = typed;
+        }
+        g.add(id, account ? account.name : nameOf(m.name), account?.id);
         current = {
           id,
           token,
@@ -303,7 +392,16 @@ wss.on("connection", (ws, req) => {
       if (!g || !s) return;
       switch (m.type) {
         case "addBot":
-          g.addBot(s.id, m.hull, m.model);
+          g.addBot(
+            s.id,
+            m.hull,
+            m.model,
+            m.skill === undefined ? undefined : (m.skill as BotSkill),
+          );
+          broadcast(g);
+          break;
+        case "mode":
+          g.setMode(s.id, m.mode);
           broadcast(g);
           break;
         case "removeBot":
@@ -371,6 +469,12 @@ const timer = setInterval(() => {
     for (const g of rooms.values()) g.step(1 / RULES.tick);
     acc -= 1 / RULES.tick;
   }
+  for (const g of rooms.values()) {
+    if (g.phase === "results" && !recorded.has(g)) {
+      recorded.add(g);
+      recordResults(g);
+    } else if (g.phase !== "results") recorded.delete(g);
+  }
   snapshotClock++;
   if (snapshotClock % 2 === 0)
     for (const session of sessions.values()) {
@@ -381,12 +485,31 @@ const timer = setInterval(() => {
   for (const s of sessions.values())
     if (!s.ws && Date.now() - s.lastActive > RULES.reconnect * 1000) leave(s);
 }, 1000 / RULES.tick);
-server.listen(port, "0.0.0.0", () =>
-  console.log(`IRON TIDE server · http://localhost:${port}`),
-);
+const rewardTimer = setInterval(() => void rewardQueue.tick(), 3000);
+server.listen(port, "0.0.0.0", () => {
+  console.log(`IRON TIDE server · http://localhost:${port}`);
+  console.log(
+    metanomic
+      ? `Metanomic 보상 연동 · 게임 ${metanomic.config.gameId}`
+      : "Metanomic 미설정 · 보상은 대기열에 저장만 됩니다 (METANOMIC_API_URL / GAME_ID / GAME_KEY)",
+  );
+  if (adminSetup.code)
+    console.log(
+      [
+        "",
+        "  ┌───────────────────────────────────────────────┐",
+        `  │  관리자 등록 코드: ${adminSetup.code}`,
+        "  │  관리자 메뉴(/admin) 첫 화면에 입력하세요.",
+        "  └───────────────────────────────────────────────┘",
+        "",
+      ].join("\n"),
+    );
+});
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     clearInterval(timer);
+    clearInterval(rewardTimer);
+    accounts.close();
     for (const ws of wss.clients) ws.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1000).unref();

@@ -18,8 +18,13 @@ export default defineConfig({
   },
   webServer: [
     {
+      command: "npx tsx tests/support/fakeMetanomic.ts 3390",
+      url: "http://127.0.0.1:3390/health",
+      reuseExistingServer: false,
+    },
+    {
       command:
-        "PORT=3100 E2E_SECRET=local-browser-verification npx tsx server/index.ts",
+        "PORT=3100 E2E_SECRET=local-browser-verification ACCOUNT_DB=:memory: METANOMIC_API_URL=http://127.0.0.1:3390/v1 METANOMIC_GAME_ID=game-test METANOMIC_GAME_KEY=test-game-key ADMIN_SETUP_CODE=TEST-0001 npx tsx server/index.ts",
       url: "http://127.0.0.1:3100/health",
       reuseExistingServer: false,
     },

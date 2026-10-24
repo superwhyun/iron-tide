@@ -1,5 +1,6 @@
 import { HULLS } from "./config";
 import { clamp, dist } from "./math";
+import { rangeBoost } from "./powerups";
 import type { Ammo, Ship, Vec2 } from "./types";
 
 export const ORDNANCE = {
@@ -22,7 +23,7 @@ export const ORDNANCE = {
   },
 };
 export function gunRangeFor(s: Ship) {
-  return HULLS[s.hull].range * (1 + 0.08 * s.upgrades.range);
+  return HULLS[s.hull].range * (1 + 0.08 * s.upgrades.range) * rangeBoost(s);
 }
 export function dispersionRadius(
   s: Ship,

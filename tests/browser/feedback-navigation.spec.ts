@@ -85,19 +85,37 @@ test("coastal reverse hold, stable Shift aim, clear armor feedback, large damage
     expect(
       Math.hypot(before.x - returned.x, before.z - returned.z),
     ).toBeLessThan(1.5);
-    await expect
-      .poll(async () => (await state(a)).self.turrets[0].reload)
-      .toBe(0);
-    await a.mouse.dblclick(mousePositions.get(a)!.x, mousePositions.get(a)!.y);
-    await expect
-      .poll(
-        () =>
-          [...eventLog.get(a)!.values()].some(
-            (e) => e.type === "hit" && e.owner === A && e.result === "shatter",
-          ),
-        { timeout: 10000 },
-      )
-      .toBe(true);
+    // HE now pierces the thin upper side, so only belt hits shatter: fire
+    // salvos until one shell lands on the belt.
+    const hitsByA = () =>
+      [...eventLog.get(a)!.values()].filter(
+        (e) => e.type === "hit" && e.owner === A,
+      );
+    const shattered = () => hitsByA().some((e) => e.result === "shatter");
+    for (let salvo = 0; salvo < 4 && !shattered(); salvo++) {
+      if (salvo)
+        await fixture(room, { advance: 13, players: [{ id: B, hp: 27000 }] });
+      await expect
+        .poll(async () => (await state(a)).self.turrets[0].reload)
+        .toBe(0);
+      const shots = (await state(a)).self.stats.shots;
+      await a.mouse.dblclick(
+        mousePositions.get(a)!.x,
+        mousePositions.get(a)!.y,
+      );
+      // Wait for the whole salvo to land, hit or miss, before judging it.
+      await expect
+        .poll(async () => (await state(a)).self.stats.shots)
+        .toBeGreaterThan(shots);
+      await expect
+        .poll(
+          async () =>
+            (await state(a)).projectiles.filter((p) => p.owner === A).length,
+          { timeout: 10000 },
+        )
+        .toBe(0);
+    }
+    expect(shattered()).toBe(true);
     await expect(a.locator("#hit-feedback")).toContainText("명중");
     await expect(a.locator("#hit-feedback")).toContainText("장갑 비관통");
     await a.screenshot({
@@ -116,7 +134,8 @@ test("coastal reverse hold, stable Shift aim, clear armor feedback, large damage
           z: -700,
           heading: 0,
           speed: 0,
-          hp: 1000,
+          // Low enough that a single overpenetration of the upper side sinks it.
+          hp: 400,
           status: { protection: 0, fire: [0, 0] },
         },
       ],

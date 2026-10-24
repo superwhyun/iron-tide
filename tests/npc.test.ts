@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { Game } from "../server/game";
 import { navigationPath } from "../server/bots";
 import { ISLANDS } from "../shared/config";
-import { dist, segmentDistance } from "../shared/math";
+import { dist, intercept, segmentDistance } from "../shared/math";
+import { HULLS } from "../shared/config";
 function solo(hull: "cruiser" | "destroyer" | "battleship" = "cruiser") {
   const g = new Game("NPC", 480, () => 0.5);
   g.add("human", "함장");
@@ -120,6 +121,48 @@ describe("NPC captains", () => {
     expect(one.bot.stats.shots).toBe(0);
     expect(one.bot.input).toEqual(two.bot.input);
     expect(one.bot.x).toBeCloseTo(two.bot.x, 6);
+  });
+  it("validates intelligence 1-5, reports it in the lobby and defaults to 5", () => {
+    const g = new Game("SKILL", 480, () => 0.5);
+    g.add("host", "H");
+    const sharp = g.addBot("host", "cruiser");
+    const novice = g.addBot("host", "cruiser", "camouflage", 1);
+    expect(() => g.addBot("host", "cruiser", "camouflage", 6 as never)).toThrow(
+      "1–5",
+    );
+    const skill = (id: string) =>
+      g.lobby().players.find((p) => p.id === id)?.skill;
+    expect(skill(sharp)).toBe(5);
+    expect(skill(novice)).toBe(1);
+  });
+  it("level 5 leads perfectly while lower levels misjudge the lead", () => {
+    let seed = 7;
+    const random = () =>
+      ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    const misses: number[] = [];
+    for (const level of [5, 1] as const) {
+      const g = new Game("AIM", 480, random);
+      g.add("human", "H");
+      const id = g.addBot("human", "cruiser", "camouflage", level);
+      g.ready.add("human");
+      g.start("human");
+      const human = g.players.get("human")!,
+        bot = g.players.get(id)!;
+      Object.assign(human, { x: -200, z: -700, heading: 0, speed: 15 });
+      Object.assign(bot, { x: 200, z: -700, heading: 0 });
+      human.input.throttle = 4;
+      g.step(1 / 30);
+      const exact = intercept(
+        bot,
+        human,
+        human.heading,
+        human.speed,
+        HULLS.cruiser.shellSpeed,
+      );
+      misses.push(dist(bot.input.aim, exact));
+    }
+    expect(misses[0]).toBeLessThan(1);
+    expect(misses[1]).toBeGreaterThan(5);
   });
   it("uses repair and upgrades and remains an NPC after sinking and respawning", () => {
     const { g, human, bot } = solo("battleship");

@@ -1,4 +1,16 @@
 import { HitFeedback } from "./hitFeedback";
+import { ScreenOverlay } from "./screenOverlay";
+import { armorPreview, isShell } from "./armorPreview";
+import { incomingSide, predictIncoming } from "./incoming";
+import { zoneColor } from "./zoneVisuals";
+import {
+  fetchAccount,
+  logout,
+  signInWithWallet,
+  WalletDiscovery,
+  walletErrorMessage,
+  type WalletChoice,
+} from "./wallet";
 import "./style.css";
 import { SeaScene } from "./scene";
 import { AudioBus } from "./audio";
@@ -11,15 +23,22 @@ import {
   UPGRADE_INFO,
   UPGRADE_KEYS,
   xpRequired,
+  respawnDelay,
 } from "../shared/config";
 import { angleDiff, bearing, clamp, dist, intercept } from "../shared/math";
 import { shoreRadius } from "../shared/terrain";
-import { aimSolution, ORDNANCE } from "../shared/ballistics";
+import { aimSolution, gunRangeFor, ORDNANCE } from "../shared/ballistics";
+import { POWERUPS } from "../shared/powerups";
 import type {
+  AccountView,
   Ammo,
   ClientMessage,
   Hull,
+  BuffKind,
+  GameMode,
   Lobby,
+  ModuleKind,
+  PickupKind,
   ServerMessage,
   Snapshot,
   Upgrade,
@@ -45,28 +64,47 @@ const timer = (s: number) =>
 const emblem = `<svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M20 3v26M13 10h14M12 16a8 8 0 1 0 16 0M6 25c2 8 8 12 14 12s12-4 14-12M3 28l3-4 5 2m18 0 5-2 3 4" stroke="currentColor" stroke-width="2"/></svg>`;
 const hullIcon = (h: Hull) =>
   `<svg viewBox="0 0 120 40" fill="none" aria-hidden="true"><path d="M5 23h106l-12 12H18L5 23Z" fill="currentColor" opacity=".8"/><path d="M34 23v-8h43v8M48 15V8h15v7M54 8V2M25 22v-5h11m45 5v-5h13" stroke="currentColor" stroke-width="3"/>${h === "battleship" ? '<path d="M21 16h17m44 0h20M30 12h8m44 0h14" stroke="currentColor" stroke-width="3"/>' : ""}</svg>`;
+const COMPASS_PX = 3;
+function compassTape() {
+  const cardinal: Record<number, string> = {
+    0: "N",
+    90: "E",
+    180: "S",
+    270: "W",
+  };
+  let html = "";
+  for (let d = -180; d <= 540; d += 5) {
+    const deg = ((d % 360) + 360) % 360,
+      left = (d + 180) * COMPASS_PX;
+    const label =
+      cardinal[deg] ?? (deg % 15 === 0 ? String(deg).padStart(3, "0") : "");
+    html += `<i class="${deg % 15 === 0 ? "major" : ""}${cardinal[deg] ? " cardinal" : ""}" style="left:${left}px">${label ? `<span>${label}</span>` : ""}</i>`;
+  }
+  return html;
+}
 $("app").innerHTML = `
   <div id="sea"></div><div class="vignette"></div>
   <section id="harbor" aria-label="함대 대기실">
-    <header class="harbor-header"><a class="brand" href="/">${emblem}<span>IRON TIDE<small>철의 해역</small></span></a><span class="header-coordinates">34° 28′ N &nbsp; 128° 41′ E <i></i> SOUTHERN ARCHIPELAGO</span><button id="help" class="icon-button">조작 안내 <span>?</span></button></header>
+    <header class="harbor-header"><a class="brand" href="/">${emblem}<span>IRON TIDE<small>철의 해역</small></span></a><span class="header-coordinates">34° 28′ N &nbsp; 128° 41′ E <i></i> SOUTHERN ARCHIPELAGO</span><span class="header-actions"><a class="admin-link" href="/admin">관리자</a><button id="help" class="icon-button">조작 안내 <span>?</span></button></span></header>
     <div class="harbor-copy"><div class="eyebrow"><span class="tiny-line"></span> NAVAL COMBAT / ONLINE</div><h1>바다를 읽고,<br>전장을 지배하라<span>.</span></h1><p>묵직한 선회. 한 발의 판단.<br>당신의 함선으로 이 해역의 주인이 되세요.</p><div class="mode-chips"><span>2—4인 개인전</span><span>8분 전술 해전</span><span>경기 중 함선 성장</span></div>
-      <div id="connect-form" class="connection-card"><label for="captain-name">함장 이름 <span>CALLSIGN</span></label><input id="captain-name" maxlength="18" placeholder="함장 이름을 입력하세요" value="함장" autocomplete="nickname"/><div class="connect-actions"><button id="create-room" class="primary">새 함대 창설 <span>↗</span></button><div class="join-row"><input id="room-code" maxlength="6" placeholder="함대 코드" aria-label="함대 코드"/><button id="join-room" class="outline">참가</button></div></div><small id="connection-note">계정 없이, 함대 코드를 공유해 친구와 출항하세요.</small></div>
-      <div id="lobby-panel" class="connection-card hidden"><div class="lobby-heading"><div><label>함대 코드 <span>INVITE YOUR FRIENDS</span></label><button id="copy-code" title="함대 코드 복사"><strong id="lobby-code"></strong><span>복사 ⧉</span></button></div><button id="leave-room" class="text-button">나가기</button></div><div id="player-list"></div><div class="npc-controls"><select id="bot-hull" aria-label="NPC 함종"><option value="destroyer">NPC 구축함</option><option value="cruiser">NPC 순양함</option><option value="battleship" selected>NPC 위장 전함</option><option value="wisconsin-golden">NPC Wisconsin Golden</option></select><button id="add-bot" class="outline">+ NPC 추가</button></div><div class="lobby-actions"><button id="ready" class="outline">출항 준비</button><button id="start" class="primary">출항 <span>→</span></button></div><small id="lobby-note">친구가 참가할 때까지 기다려 주세요.</small></div>
+      <div id="connect-form" class="connection-card"><div id="account-box" class="account-box" aria-live="polite"></div><label for="captain-name">함장 이름 <span>CALLSIGN</span></label><input id="captain-name" maxlength="18" placeholder="함장 이름을 입력하세요" value="함장" autocomplete="nickname"/><div class="connect-actions"><button id="create-room" class="primary">새 함대 창설 <span>↗</span></button><div class="join-row"><input id="room-code" maxlength="6" placeholder="함대 코드" aria-label="함대 코드"/><button id="join-room" class="outline">참가</button></div></div><small id="connection-note">계정 없이, 함대 코드를 공유해 친구와 출항하세요.</small></div>
+      <div id="lobby-panel" class="connection-card hidden"><div class="lobby-heading"><div><label>함대 코드 <span>INVITE YOUR FRIENDS</span></label><button id="copy-code" title="함대 코드 복사"><strong id="lobby-code"></strong><span>복사 ⧉</span></button></div><button id="leave-room" class="text-button">나가기</button></div><div class="mode-picker" role="radiogroup" aria-label="경기 방식"><button data-mode="deathmatch" role="radio"><strong>격침전</strong><small>많이 격침한 함장이 승리</small></button><button data-mode="domination" role="radio"><strong>거점전</strong><small>거점 4곳 점령 · 600점 선취</small></button></div><div id="player-list"></div><div class="npc-controls"><select id="bot-hull" aria-label="NPC 함종"><option value="destroyer">NPC 구축함</option><option value="cruiser">NPC 순양함</option><option value="battleship" selected>NPC 위장 전함</option><option value="wisconsin-golden">NPC Wisconsin Golden</option></select><select id="bot-skill" aria-label="NPC 지능"><option value="1">지능 1 · 초보</option><option value="2">지능 2 · 미숙</option><option value="3" selected>지능 3 · 보통</option><option value="4">지능 4 · 숙련</option><option value="5">지능 5 · 정예</option></select><button id="add-bot" class="outline">+ NPC 추가</button></div><div class="lobby-actions"><button id="ready" class="outline">출항 준비</button><button id="start" class="primary">출항 <span>→</span></button></div><small id="lobby-note">친구가 참가할 때까지 기다려 주세요.</small></div>
     </div>
     <aside class="ship-callout"><span id="ship-class">CRUISER / 순양함</span><h2 id="ship-name">청람</h2><p id="ship-role">정밀 포격 · 다목적 전투</p><div class="spec-bars" id="ship-specs"></div><div class="ship-label">기본 무장 <span id="ship-armament">203mm 주포 · 어뢰 · 부포</span></div><button id="preview-salvo" class="outline">주포 시연 · 음향 듣기</button><label class="volume-control">효과음 <input id="volume" type="range" min="0" max="100" value="72" aria-label="효과음 음량"/></label></aside>
     <div class="fleet-selection"><div class="selection-heading"><span>01 <b>함선 선택</b></span><small>각 함선은 매 경기 기본 무장으로 출항합니다.</small></div><div class="ship-cards">${(Object.keys(HULLS) as Hull[]).map((h, i) => `<button class="ship-card ${h === "cruiser" ? "selected" : ""}" data-hull="${h}" aria-pressed="${h === "cruiser"}"><span class="card-number">0${i + 1}</span>${hullIcon(h)}<span class="card-info"><strong>${HULLS[h].title} <small>${HULLS[h].name}</small></strong><span>${HULLS[h].role}</span></span><span class="selection-dot"></span></button>`).join("")}</div></div>
     <footer class="harbor-footer"><span>OPERATION 01 <b>군도 해역</b></span><span>THREE DIMENSIONS. ONE OCEAN.</span></footer>
   </section>
   <section id="battle" class="hidden" aria-label="전투 화면">
-    <div class="battle-top"><div class="battle-brand">${emblem}<span>IRON TIDE<small id="battle-room"></small></span></div><div class="match-time"><span>개인 격침전</span><strong id="match-clock">08:00</strong></div><div class="battle-right"><span id="network">연결 중</span><button id="sound" class="icon-button">음향 ON</button><button id="radio" class="icon-button">무전 ON</button><button id="battle-help" class="icon-button">조작 ?</button><button id="battle-leave" class="icon-button">나가기</button></div></div>
-    <div id="detection" class="detection hidden">◈ &nbsp; 적에게 발견됨</div><div id="torpedo-warning" class="torpedo-warning hidden">⚠ 어뢰 접근 · 항로를 변경하세요</div><div id="grounding-warning" class="grounding-warning hidden"></div><div id="edge-warning" class="edge-warning hidden">해역 경계 접근</div>
+    <div id="impact-overlay" aria-hidden="true"></div>
+    <div class="battle-top"><div class="battle-brand">${emblem}<span>IRON TIDE<small id="battle-room"></small></span></div><div id="zone-bar" class="zone-bar hidden" aria-label="거점 현황"></div><div class="match-time"><span id="match-mode">개인 격침전</span><strong id="match-clock">08:00</strong><div class="compass" aria-hidden="true"><div id="compass-tape">${compassTape()}</div><i id="compass-ship"></i><b id="compass-heading">000</b></div></div><div class="battle-right"><span id="network">연결 중</span><button id="sound" class="icon-button">음향 ON</button><button id="radio" class="icon-button">무전 ON</button><button id="battle-help" class="icon-button">조작 ?</button><button id="battle-leave" class="icon-button">나가기</button></div></div>
+    <div id="detection" class="detection hidden">◈ &nbsp; 적에게 발견됨</div><div id="torpedo-warning" class="torpedo-warning hidden">⚠ 어뢰 접근 · 항로를 변경하세요</div><div id="incoming-warning" class="incoming-warning hidden" role="alert"></div><div id="grounding-warning" class="grounding-warning hidden"></div><div id="edge-warning" class="edge-warning hidden">해역 경계 접근</div>
     <div id="contacts"></div><div id="radio-transmission" class="hidden" aria-live="polite"><small>함교 무전 · RADIO</small><span></span></div><div id="reticle"><i></i><i></i><i></i><i></i><span id="aim-ready"></span></div><div id="binocular-vignette" class="hidden"></div><div id="binocular-ruler" class="hidden">−20 ┄┄┄ −15 ┄┄┄ −10 ┄┄┄ −5 ┄┄┼┄┄ 5 ┄┄┄ 10 ┄┄┄ 15 ┄┄┄ 20</div>
-    <div id="aim-info"><span id="aim-distance"></span><span id="aim-flight"></span><span id="aim-status"></span><span id="aim-dispersion"></span></div><div id="target-info" class="hidden"></div><div id="hit-feedback" role="status" aria-live="polite"></div><div id="hit-marker" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div id="hit-history"></div><div id="hit-floats"></div><div id="event-feed"></div>
+    <div id="aim-info"><span id="aim-distance"></span><span id="aim-flight"></span><span id="aim-status"></span><span id="aim-dispersion"></span></div><div id="target-info" class="hidden"></div><div id="armor-preview" class="hidden" aria-live="off"></div><div id="hit-feedback" role="status" aria-live="polite"></div><div id="hit-marker" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div id="hit-history"></div><div id="hit-floats"></div><div id="event-feed"></div>
     <div class="ship-hud"><div class="hull-title"><span id="hud-hull"></span><strong id="hud-name"></strong><span id="hud-level">LV 1</span></div><div class="hp-row"><strong id="hp-value"></strong><small id="hp-max"></small></div><div class="hp-track"><div id="hp-repair"></div><div id="hp-bar"></div></div><div class="xp-track"><div id="xp-bar"></div></div><div class="status-line" id="ship-status"></div><div class="helm"><div class="speed"><strong id="speed">0.0</strong><span>kn</span></div><div class="engine"><span>ENGINE ORDER</span><strong id="throttle">정지</strong><div class="throttle-ticks">${THROTTLE_LABELS.map((v, i) => `<i data-throttle="${i}" title="${v}"></i>`).join("")}</div></div><div class="rudder"><span>RUDDER</span><strong id="rudder">중앙</strong></div></div><div id="turret-display"></div><button id="upgrade-open" class="upgrade-prompt">함선 강화 <b id="points-count">0</b><kbd>Ctrl</kbd></button></div>
     <div class="weapon-hud"><div class="weapon-row"><button data-weapon="HE" class="weapon active"><kbd>1</kbd><strong>고폭탄</strong><small>HE · 화재 유발</small></button><button data-weapon="AP" class="weapon"><kbd>2</kbd><strong>철갑탄</strong><small>AP · 장갑 관통</small></button><button data-weapon="TORP" class="weapon"><kbd>3</kbd><strong>어뢰</strong><small>TORPEDO</small></button><button data-weapon="SAP" class="weapon"><kbd>4</kbd><strong>반철갑탄</strong><small>SAP · 경장갑 타격</small></button><button data-weapon="MINE" class="weapon"><kbd>5</kbd><strong>기뢰 설치</strong><small>함미 투하</small></button><button data-weapon="RBU" class="weapon"><kbd>6</kbd><strong>대어뢰 로켓</strong><small>RBU · 수역 요격</small></button></div><div class="ability-row"><button id="ability-dcp"><kbd>R</kbd><span>피해 복구</span><strong id="dcp-timer">준비</strong></button><button id="ability-special"><kbd>T</kbd><span id="special-label">특수 장비</span><strong id="special-timer">준비</strong></button></div><div class="control-hint">W S 항속 &nbsp; A D 조타 &nbsp; 우클릭 둘러보기 &nbsp; Shift 쌍안경</div></div>
     <div class="minimap-wrap"><div class="minimap-heading"><span>군도 해역</span><small>TACTICAL MAP</small></div><canvas id="minimap" width="460" height="460" aria-label="전술 미니맵"></canvas><div class="map-legend"><span>▲ 내 함선</span><span>◇ 마지막 목격</span><span id="fps"></span></div></div>
     <div id="capture-prompt" class="capture-prompt"><strong>함선 지휘</strong><span>화면을 클릭하면 마우스로 조준합니다.</span><small>Esc: 커서 해제 · Ctrl: 강화 / UI 조작</small><button id="capture" class="primary">전투 조작 시작</button></div>
-    <div id="respawn" class="respawn hidden"><div class="eyebrow">SHIP LOST</div><h2>함선 침몰</h2><p><strong id="respawn-clock">5</strong>초 후 재출격</p><small>레벨과 강화는 이번 경기 동안 유지됩니다.</small></div>
+    <div id="respawn" class="respawn hidden"><div class="eyebrow">SHIP LOST</div><h2>함선 침몰</h2><p><strong id="respawn-clock">5</strong>초 후 재출격</p><small id="respawn-note">레벨과 강화는 이번 경기 동안 유지됩니다.</small></div>
     <div id="upgrade-panel" class="upgrade-panel hidden"><div class="panel-heading"><div><span class="eyebrow">FIELD MODIFICATION</span><h2>함선 강화 <b id="upgrade-points">0</b></h2></div><button id="upgrade-close" class="icon-button" aria-label="강화 창 닫기">×</button></div><p>전투는 계속됩니다. 항속과 항로를 확인하세요.</p><div id="upgrade-options"></div></div>
     <div id="scoreboard" class="modal-panel hidden"><h2>전투 현황</h2><div id="live-scores"></div></div>
   </section>
@@ -112,6 +150,8 @@ let handledEvents = new Set<number>();
 let lastSend = 0,
   uiTime = 0;
 let throttleHeld: { key: "w" | "s"; next: number } | null = null;
+const overlay = new ScreenOverlay($("impact-overlay"));
+sea.onImpact = (kind, strength) => overlay.trigger(kind, strength);
 const hitFeedback = new HitFeedback(
   $("hit-feedback"),
   $("hit-history"),
@@ -119,6 +159,85 @@ const hitFeedback = new HitFeedback(
   $("hit-floats"),
 );
 
+const MODULE_LABEL: Record<ModuleKind, string> = {
+  turret: "주포탑",
+  rudder: "조타 장치",
+  engine: "기관",
+};
+// ── Wallet sign-in (optional: guests still play with just a name) ──
+const walletDiscovery = new WalletDiscovery();
+let account: AccountView | null = null,
+  walletBusy = "",
+  walletChoices: WalletChoice[] | null = null;
+const shortWallet = (w: string) => `${w.slice(0, 6)}…${w.slice(-4)}`;
+function renderAccount() {
+  const box = $("account-box");
+  const nameInput = $<HTMLInputElement>("captain-name");
+  if (account) {
+    box.innerHTML = `<div class="account-row"><span class="account-badge">지갑</span><strong title="${esc(account.wallet)}">${shortWallet(account.wallet)}</strong><button id="wallet-logout" class="text-button">로그아웃</button></div><div class="account-stats">${account.matches}전 ${account.wins}승 · 격침 ${number(account.kills)} · 피해 ${number(account.damage)}</div>`;
+    if (document.activeElement !== nameInput) nameInput.value = account.name;
+    $("connection-note").textContent =
+      "로그인한 지갑으로 출항합니다. 함장 이름과 경기 결과가 전적에 저장됩니다.";
+    $("wallet-logout").onclick = async () => {
+      try {
+        await logout();
+        account = null;
+        renderAccount();
+      } catch (error) {
+        toast(
+          error instanceof Error ? error.message : "로그아웃하지 못했습니다.",
+        );
+      }
+    };
+    return;
+  }
+  $("connection-note").textContent =
+    "계정 없이 함대 코드를 공유해 친구와 출항할 수 있습니다.";
+  const list = walletChoices
+    ? walletChoices.length
+      ? `<div class="wallet-list">${walletChoices.map((w, i) => `<button class="outline" data-wallet="${i}">${esc(w.name)}</button>`).join("")}</div>`
+      : '<small class="wallet-missing">지갑 확장 프로그램을 찾지 못했습니다. Ronin Wallet 또는 MetaMask를 설치하세요.</small>'
+    : "";
+  box.innerHTML = `<button id="wallet-login" class="wallet-login" ${walletBusy ? "disabled" : ""}>${walletBusy || "지갑으로 로그인"}</button>${list}<small>로그인하면 함장 이름과 전적이 저장됩니다. 서명만 하며 거래나 토큰 승인은 하지 않습니다.</small>`;
+  $("wallet-login").onclick = () => {
+    walletDiscovery.request();
+    const wallets = walletDiscovery.wallets();
+    if (wallets.length === 1) void walletSignIn(wallets[0]);
+    else {
+      walletChoices = wallets;
+      renderAccount();
+    }
+  };
+  box
+    .querySelectorAll<HTMLButtonElement>("[data-wallet]")
+    .forEach(
+      (b) =>
+        (b.onclick = () =>
+          void walletSignIn(walletChoices![Number(b.dataset.wallet)])),
+    );
+}
+async function walletSignIn(choice: WalletChoice) {
+  walletChoices = null;
+  walletBusy = `${choice.name}에서 서명을 승인하세요…`;
+  renderAccount();
+  try {
+    account = await signInWithWallet(choice.provider);
+    toast(`${account.name} 함장 · 지갑 로그인 완료`);
+  } catch (error) {
+    toast(walletErrorMessage(error));
+  } finally {
+    walletBusy = "";
+    renderAccount();
+  }
+}
+async function refreshAccount() {
+  try {
+    account = await fetchAccount();
+  } catch {
+    account = null;
+  }
+  renderAccount();
+}
 function toast(message: string) {
   $("toast").textContent = message;
   $("toast").classList.add("show");
@@ -223,6 +342,7 @@ function connect(message?: ClientMessage) {
   };
 }
 function clearSession() {
+  void refreshAccount();
   identity = { id: "", token: "", room: "" };
   sessionStorage.removeItem("iron-tide-session");
   clearTimeout(reconnectTimer);
@@ -251,9 +371,15 @@ function renderLobby() {
   $("player-list").innerHTML = lobby.players
     .map(
       (p) =>
-        `<div class="player-row" data-player="${esc(p.id)}"><span class="player-mark ${p.ready ? "is-ready" : ""}">${p.ready ? "✓" : "○"}</span><div><strong>${esc(p.name)} ${p.bot ? "<small>NPC</small>" : p.id === lobby!.host ? "<small>함대장</small>" : ""}</strong><span>${HULLS[p.hull].title} · ${p.npcModel === "wisconsin-golden" ? NPC_MODELS[p.npcModel].title : HULLS[p.hull].name}</span></div><small>${!p.connected ? "재접속 대기" : p.ready ? "준비 완료" : "함선 정비 중"}</small>${p.bot && lobby!.host === identity.id ? `<button class="remove-bot" data-remove-bot="${esc(p.id)}" aria-label="${esc(p.name)} 제외">×</button>` : ""}</div>`,
+        `<div class="player-row" data-player="${esc(p.id)}"><span class="player-mark ${p.ready ? "is-ready" : ""}">${p.ready ? "✓" : "○"}</span><div><strong>${esc(p.name)} ${p.bot ? `<small>NPC · 지능 ${p.skill ?? 5}</small>` : p.id === lobby!.host ? "<small>함대장</small>" : ""}${p.verified ? '<small class="verified">지갑</small>' : ""}</strong><span>${HULLS[p.hull].title} · ${p.npcModel === "wisconsin-golden" ? NPC_MODELS[p.npcModel].title : HULLS[p.hull].name}</span></div><small>${!p.connected ? "재접속 대기" : p.ready ? "준비 완료" : "함선 정비 중"}</small>${p.bot && lobby!.host === identity.id ? `<button class="remove-bot" data-remove-bot="${esc(p.id)}" aria-label="${esc(p.name)} 제외">×</button>` : ""}</div>`,
     )
     .join("");
+  document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) => {
+    const on = b.dataset.mode === lobby!.mode;
+    b.classList.toggle("selected", on);
+    b.setAttribute("aria-checked", String(on));
+    b.disabled = lobby!.host !== identity.id;
+  });
   const mine = lobby.players.find((p) => p.id === identity.id);
   if (mine) {
     hull = mine.hull;
@@ -273,8 +399,9 @@ function renderLobby() {
         : "모든 함장이 준비하면 출항합니다. 플레이어·NPC 합계 최대 4척.";
   ($("add-bot") as HTMLButtonElement).disabled =
     lobby.host !== identity.id || lobby.players.length >= RULES.maxPlayers;
-  ($("bot-hull") as HTMLSelectElement).disabled =
-    lobby.host !== identity.id || lobby.players.length >= RULES.maxPlayers;
+  for (const id of ["bot-hull", "bot-skill"])
+    ($(id) as HTMLSelectElement).disabled =
+      lobby.host !== identity.id || lobby.players.length >= RULES.maxPlayers;
 }
 function selectHullUI(h: Hull) {
   const c = HULLS[h];
@@ -325,14 +452,17 @@ function showResults() {
   firing = false;
   release();
   $("results").classList.remove("hidden");
-  const scores = snap!.scores;
-  $("winner").textContent = `${scores[0]?.name ?? "함장"} 함장 · 해역 제압`;
+  const scores = snap!.scores,
+    domination = snap!.mode === "domination";
+  $("winner").textContent =
+    `${scores[0]?.name ?? "함장"} 함장 · ${domination ? `거점전 ${number(scores[0]?.score ?? 0)}점` : "해역 제압"}`;
+  const row = domination ? "result-row with-score" : "result-row";
   $("result-scores").innerHTML =
-    `<div class="result-row heading"><span>함장 / 함선</span><span>격침</span><span>피해량</span><span>명중률</span><span>레벨</span></div>` +
+    `<div class="${row} heading"><span>함장 / 함선</span>${domination ? "<span>점수</span>" : ""}<span>격침</span><span>피해량</span><span>명중률</span><span>레벨</span></div>` +
     scores
       .map(
         (p, i) =>
-          `<div class="result-row ${p.id === identity.id ? "mine" : ""}"><span><b>${i + 1}</b><strong>${esc(p.name)}<small>${HULLS[p.hull].title}</small></strong></span><span>${p.kills}</span><span>${number(p.damage ?? 0)}</span><span>${Math.round((p.accuracy ?? 0) * 100)}%</span><span>${p.level}</span></div>`,
+          `<div class="${row} ${p.id === identity.id ? "mine" : ""}"><span><b>${i + 1}</b><strong>${esc(p.name)}<small>${HULLS[p.hull].title}</small></strong></span>${domination ? `<span>${number(p.score ?? 0)}</span>` : ""}<span>${p.kills}</span><span>${number(p.damage ?? 0)}</span><span>${Math.round((p.accuracy ?? 0) * 100)}%</span><span>${p.level}</span></div>`,
       )
       .join("");
   ($("rematch") as HTMLButtonElement).disabled = snap!.host !== identity.id;
@@ -356,6 +486,25 @@ function handleEvents(s: Snapshot) {
       ) {
         const name = s.scores.find((p) => p.id === e.target)?.name ?? "적 함선";
         hitFeedback.record(e, name);
+      }
+      if (e.type === "pickup" && e.owner === identity.id && e.text) {
+        const info = POWERUPS[e.text as PickupKind];
+        toast(
+          `${info.name} 획득 · ${info.effect}${e.text === "repair" ? "" : " (20초)"}`,
+        );
+        audio.pickup();
+      }
+      if (e.type === "capture")
+        toast(
+          e.owner === identity.id
+            ? `거점 ${e.text} 점령 · +20점`
+            : `${s.scores.find((p) => p.id === e.owner)?.name ?? "적"} 함장이 거점 ${e.text} 점령`,
+        );
+      if (e.type === "module" && e.module) {
+        if (e.target === identity.id)
+          toast(`${MODULE_LABEL[e.module]} 고장 · R 피해 복구로 즉시 수리`);
+        else if (e.owner === identity.id)
+          toast(`적 ${MODULE_LABEL[e.module]} 파손`);
       }
       if (e.type === "level" && e.owner === identity.id)
         toast(`${e.text} · 강화 포인트 +1`);
@@ -503,12 +652,20 @@ $("ready").onclick = () =>
     ready: !lobby?.players.find((p) => p.id === identity.id)?.ready,
   });
 $("start").onclick = () => send({ type: "start" });
+document
+  .querySelectorAll<HTMLButtonElement>("[data-mode]")
+  .forEach(
+    (b) =>
+      (b.onclick = () =>
+        send({ type: "mode", mode: b.dataset.mode as GameMode })),
+  );
 $("add-bot").onclick = () => {
   const value = ($("bot-hull") as HTMLSelectElement).value;
   send({
     type: "addBot",
     hull: value === "wisconsin-golden" ? "battleship" : (value as Hull),
     model: value === "wisconsin-golden" ? "wisconsin-golden" : "camouflage",
+    skill: Number(($("bot-skill") as HTMLSelectElement).value),
   });
 };
 $("player-list").addEventListener("click", (e) => {
@@ -746,6 +903,34 @@ function drawMap() {
     ctx.closePath();
     ctx.fill();
   }
+  for (const crate of snap.pickups) {
+    const p = xy(crate);
+    ctx.fillStyle = POWERUPS[crate.kind].color;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 7);
+    ctx.lineTo(p.x + 6, p.y);
+    ctx.lineTo(p.x, p.y + 7);
+    ctx.lineTo(p.x - 6, p.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+  for (const zone of snap.zones) {
+    const p = xy(zone),
+      color = zoneColor(zone, s.id);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = `${color}22`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, zone.radius * k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = "700 18px Rajdhani, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(zone.id, p.x, p.y + 6);
+    ctx.textAlign = "start";
+    ctx.lineWidth = 1;
+  }
   for (const m of snap.smokes) {
     const p = xy(m);
     ctx.fillStyle = "#a0b2b64d";
@@ -812,11 +997,94 @@ function drawMap() {
     ctx.fillRect(pos.x - 2, pos.y - 2, 4, 4);
   }
 }
+const degrees = (radians: number) =>
+  ((((-radians * 180) / Math.PI) % 360) + 360) % 360;
+function updateCompass(s: Snapshot) {
+  const view = degrees(sea.yaw);
+  $("compass-tape").style.transform =
+    `translateX(${-(view + 180) * COMPASS_PX}px)`;
+  $("compass-heading").textContent = String(Math.round(view) % 360).padStart(
+    3,
+    "0",
+  );
+  const offset = (angleDiff(-s.self.heading, -sea.yaw) * 180) / Math.PI;
+  const marker = $("compass-ship");
+  marker.hidden = Math.abs(offset) > 58;
+  marker.style.transform = `translateX(${offset * COMPASS_PX}px)`;
+  const shake = `translate(${sea.shakeOffset.x}px,${sea.shakeOffset.y}px)`;
+  $("contacts").style.transform = shake;
+  $("hit-floats").style.transform = shake;
+}
+/** Zone ownership strip and score race for domination matches. */
+function renderZones(s: Snapshot["self"]) {
+  const domination = snap!.mode === "domination";
+  $("zone-bar").classList.toggle("hidden", !domination);
+  $("match-mode").textContent = domination
+    ? `거점전 · ${snap!.scoreLimit}점 선취`
+    : "개인 격침전";
+  if (!domination) return;
+  const mine = snap!.scores.find((p) => p.id === s.id)?.score ?? 0,
+    leader = snap!.scores.find((p) => p.id !== s.id);
+  const here = snap!.zones.find((z) => dist(s, z) < z.radius);
+  const status = !here
+    ? ""
+    : here.contested
+      ? `거점 ${here.id} 교전 중 · 점령 정지`
+      : here.owner === s.id
+        ? `거점 ${here.id} 확보`
+        : here.capturer === s.id
+          ? `거점 ${here.id} 점령 중 ${Math.round(here.progress * 100)}%`
+          : "";
+  $("zone-bar").innerHTML =
+    snap!.zones
+      .map(
+        (z) =>
+          `<span class="zone-chip" data-owner="${z.owner === s.id ? "mine" : z.owner ? "enemy" : "neutral"}" data-capturing="${z.capturer === s.id ? "mine" : "enemy"}"${z.contested ? " data-contested" : ""} style="--progress:${z.progress}"><b>${z.id}</b></span>`,
+      )
+      .join("") +
+    `<span class="zone-score"><strong>${number(mine)}</strong><small>/ ${snap!.scoreLimit}${leader ? ` · ${esc(leader.name)} ${number(leader.score ?? 0)}` : ""}</small></span>` +
+    (status ? `<em>${status}</em>` : "");
+}
+/** Warns about enemy salvos that will land on our hull if we hold course. */
+function renderIncoming(s: Snapshot["self"]) {
+  const shells = s.alive
+    ? predictIncoming(
+        s,
+        snap!.projectiles,
+        (performance.now() - lastSnapshot) / 1000,
+      )
+    : [];
+  sea.setIncoming(shells);
+  const threats = shells.filter((p) => p.threat);
+  const el = $("incoming-warning");
+  el.classList.toggle("hidden", !threats.length);
+  if (!threats.length) return;
+  const first = threats[0];
+  el.innerHTML = `<b>⚠ 포탄 접근 ${first.eta.toFixed(1)}초</b><span>${incomingSide(s, first)} · ${threats.length}발 · 변침 / 변속으로 회피</span>`;
+  audio.warning();
+}
+const PREVIEW_REACH = 120;
+/** Expected penetration against the locked target, or whatever is under the sight. */
+function renderArmorPreview(
+  s: Snapshot["self"],
+  locked?: Snapshot["contacts"][number],
+) {
+  const shell = weapon,
+    candidate =
+      locked ??
+      snap!.contacts
+        .filter((c) => c.alive && dist(c, sea.aim) < PREVIEW_REACH)
+        .sort((a, b) => dist(a, sea.aim) - dist(b, sea.aim))[0];
+  const el = $("armor-preview");
+  el.classList.toggle("hidden", !candidate || !isShell(shell) || !s.alive);
+  if (!candidate || !isShell(shell)) return;
+  el.innerHTML = armorPreview(s, candidate, shell).html;
+}
 function updateHUD() {
   if (!snap) return;
   const s = snap.self,
     c = HULLS[s.hull],
-    range = c.range * (1 + 0.08 * s.upgrades.range),
+    range = gunRangeFor(s),
     d = dist(s, sea.aim);
   $("match-clock").textContent = timer(snap.remaining);
   $("hud-hull").textContent = c.title;
@@ -825,6 +1093,14 @@ function updateHUD() {
   $("hp-value").textContent = number(s.hp);
   $("hp-max").textContent = `/ ${number(s.maxHp)}`;
   $("hp-bar").style.width = `${(s.hp / s.maxHp) * 100}%`;
+  const health = s.alive ? s.hp / s.maxHp : 1;
+  document
+    .querySelector<HTMLElement>(".ship-hud")!
+    .setAttribute(
+      "data-hp",
+      health < 0.3 ? "critical" : health < 0.6 ? "warn" : "ok",
+    );
+  overlay.setCritical(health < 0.3 ? 1 - health / 0.3 : 0);
   $("hp-repair").style.width =
     `${((s.hp + s.status.healPool) / s.maxHp) * 100}%`;
   $("xp-bar").style.width =
@@ -853,10 +1129,20 @@ function updateHUD() {
     s.status.flood > 0
       ? `<span class="danger">침수 ${Math.ceil(s.status.flood)}s</span>`
       : "",
+    s.status.rudderJam > 0
+      ? `<span class="danger">조타 고장 ${Math.ceil(s.status.rudderJam)}s</span>`
+      : "",
+    s.status.engineHit > 0
+      ? `<span class="danger">기관 손상 ${Math.ceil(s.status.engineHit)}s</span>`
+      : "",
     s.status.immune > 0 ? '<span class="good">피해 복구 중</span>' : "",
     s.status.sonar > 0 ? '<span class="good">음향 탐지 중</span>' : "",
     s.status.smoke > 0 ? '<span class="good">연막 전개 중</span>' : "",
     s.status.heal > 0 ? '<span class="good">체력 수리 중</span>' : "",
+    ...(Object.entries(s.buffs) as [BuffKind, number][]).map(
+      ([kind, left]) =>
+        `<span class="buff" style="--buff:${POWERUPS[kind].color}">${POWERUPS[kind].glyph} ${POWERUPS[kind].name} ${Math.ceil(left)}s</span>`,
+    ),
   ].join("");
   $("detection").classList.toggle("hidden", !snap.detected || !s.alive);
   $("edge-warning").classList.toggle(
@@ -872,6 +1158,8 @@ function updateHUD() {
   );
   $("torpedo-warning").classList.toggle("hidden", !torps.length || !s.alive);
   if (torps.length && s.alive) audio.warning();
+  renderIncoming(s);
+  renderZones(s);
   $("dcp-timer").textContent =
     s.status.dcp > 0 ? `${Math.ceil(s.status.dcp)}s` : "준비";
   $("special-label").textContent = `${c.special} · ${s.status.charges}`;
@@ -891,6 +1179,8 @@ function updateHUD() {
   });
   $("turret-display").innerHTML = `<span>주포</span>${s.turrets
     .map((t, i) => {
+      if ((t.disabled ?? 0) > 0)
+        return `<i class="broken"><b>${i + 1}</b><small>고장 ${Math.ceil(t.disabled!)}</small></i>`;
       const ready = t.reload <= 0;
       const aligned = Math.abs(angleDiff(t.angle, bearing(s, sea.aim))) < 0.065;
       return `<i class="${ready && aligned ? "ready" : ""}"><b>${i + 1}</b><small>${ready ? (aligned ? "준비" : "선회") : t.reload.toFixed(1)}</small></i>`;
@@ -962,6 +1252,7 @@ function updateHUD() {
     '[data-weapon="RBU"] small',
   )!.textContent = `남은 ${s.rocketsLeft}회 · 어뢰 요격`;
   const targ = snap.contacts.find((c) => c.id === target);
+  renderArmorPreview(s, targ);
   $("target-info").classList.toggle("hidden", !targ);
   if (targ)
     $("target-info").textContent =
@@ -983,10 +1274,12 @@ function updateHUD() {
     .map((contact) => {
       const pos = sea.screenPoint(contact, 28);
       if (!pos.visible) return "";
-      return `<div class="contact ${contact.id === target ? "locked" : ""}" data-contact="${contact.id}" style="left:${pos.x}px;top:${pos.y}px"><span>${HULLS[contact.hull].title} · ${number(dist(s, contact))}m</span><strong>${esc(contact.name)}</strong><div><i style="width:${(contact.hp / contact.maxHp) * 100}%"></i></div></div>`;
+      return `<div class="contact ${contact.id === target ? "locked" : ""}" data-contact="${contact.id}" style="left:${pos.x}px;top:${pos.y}px"><span>${HULLS[contact.hull].title} · ${number(dist(s, contact))}m</span><strong>${esc(contact.name)}${contact.buffs.map((k) => `<em class="contact-buff" style="color:${POWERUPS[k].color}" title="${POWERUPS[k].name}">${POWERUPS[k].glyph}</em>`).join("")}</strong><div><i style="width:${(contact.hp / contact.maxHp) * 100}%"></i></div></div>`;
     })
     .join("");
   $("respawn").classList.toggle("hidden", s.alive || phase !== "battle");
+  $("respawn-note").textContent =
+    `이번 경기 ${s.stats.deaths}회 침몰 · 다음 침몰 시 ${respawnDelay(s.stats.deaths + 1)}초 대기 · 레벨·강화 유지`;
   $("respawn-clock").textContent = String(
     Math.max(0, Math.ceil(s.respawnAt - snap.time)),
   );
@@ -1001,7 +1294,7 @@ function updateHUD() {
     $("live-scores").innerHTML = snap.scores
       .map(
         (p) =>
-          `<div class="score-row"><strong>${esc(p.name)}</strong><span>${HULLS[p.hull].title}</span><span>${p.kills} 격침 / ${p.deaths} 침몰</span></div>`,
+          `<div class="score-row"><strong>${esc(p.name)}</strong><span>${HULLS[p.hull].title}</span>${snap!.mode === "domination" ? `<span>${number(p.score ?? 0)}점</span>` : ""}<span>${p.kills} 격침 / ${p.deaths} 침몰</span></div>`,
       )
       .join("");
   $("network").textContent =
@@ -1011,6 +1304,7 @@ function updateHUD() {
   drawMap();
 }
 selectHullUI(hull);
+void refreshAccount();
 try {
   const saved = JSON.parse(
     sessionStorage.getItem("iron-tide-session") ?? "null",
@@ -1051,6 +1345,7 @@ function frame(now: number) {
   $("radio-transmission").classList.toggle("hidden", !playing || !radio.text);
   $("radio-transmission").querySelector("span")!.textContent = radio.text;
   sea.render(elapsed, snap, playing);
+  if (playing && snap) updateCompass(snap);
   if (playing && snap) {
     if (now - lastSend >= 50) {
       pushInput();

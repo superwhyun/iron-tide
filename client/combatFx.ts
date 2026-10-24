@@ -1,374 +1,617 @@
 import * as THREE from "three";
-import { RULES } from "../shared/config";
-import type { GameEvent, Projectile, Snapshot } from "../shared/types";
+import type { GameEvent } from "../shared/types";
 import type { WarshipModel } from "./warship";
+import { fxTextures } from "./fxTextures";
+import {
+  columnGeometry,
+  debrisGeometry,
+  EMBER,
+  HDR_FIRE,
+  ParticleSystem,
+  rand,
+  randomUnit,
+  sparkGeometry,
+} from "./particles";
+import { ShellTracks } from "./shellTracks";
 
-function spriteTexture(smoke: boolean) {
-  const c = document.createElement("canvas");
-  c.width = c.height = 128;
-  const ctx = c.getContext("2d")!;
-  if (smoke) {
-    for (let n = 0; n < 34; n++) {
-      const a = n * 2.399,
-        r = 12 + (n % 7) * 4,
-        x = 64 + Math.sin(a) * r,
-        y = 64 + Math.cos(a) * r,
-        gradient = ctx.createRadialGradient(x, y, 0, x, y, 24 + (n % 5));
-      gradient.addColorStop(0, "rgba(255,255,255,.17)");
-      gradient.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, 128, 128);
-    }
-  } else {
-    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    g.addColorStop(0, "rgba(255,255,255,1)");
-    g.addColorStop(0.12, "rgba(255,245,210,.95)");
-    g.addColorStop(0.4, "rgba(255,160,45,.32)");
-    g.addColorStop(1, "rgba(255,100,10,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 128, 128);
-  }
-  return new THREE.CanvasTexture(c);
-}
-function burningTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d")!;
-  for (let n = 0; n < 32; n++) {
-    const level = n / 31,
-      x = 64 + Math.sin(n * 2.399) * 25 * (1 - level),
-      y = 220 - level * 185;
-    const radius = 32 * (1 - level * 0.8);
-    const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    g.addColorStop(
-      0,
-      level < 0.35 ? "rgba(255,248,199,.95)" : "rgba(255,188,43,.8)",
-    );
-    g.addColorStop(0.35, "rgba(255,151,19,.8)");
-    g.addColorStop(0.7, "rgba(245,58,3,.4)");
-    g.addColorStop(1, "rgba(170,22,0,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-  }
-  const t = new THREE.CanvasTexture(canvas);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-export const fireTexture = burningTexture();
-const cloud = spriteTexture(true),
-  glow = spriteTexture(false);
-export { cloud as smokeTexture, glow as flameTexture };
-const columnGeometry = new THREE.LatheGeometry(
-  [
-    new THREE.Vector2(0, 0),
-    new THREE.Vector2(2, 1),
-    new THREE.Vector2(1.25, 5),
-    new THREE.Vector2(0.8, 12),
-    new THREE.Vector2(0.3, 19),
-    new THREE.Vector2(0, 22),
-  ],
-  16,
-);
-const ringGeometry = new THREE.RingGeometry(0.7, 1, 40);
-ringGeometry.rotateX(-Math.PI / 2);
-interface Particle {
-  object: THREE.Object3D;
-  age: number;
-  life: number;
-  velocity: THREE.Vector3;
-  gravity: number;
-  grow: number;
-  opacity: number;
-  kind: string;
-  startScale: THREE.Vector3;
-}
-interface Round {
-  root: THREE.Group;
-  trail: THREE.Line;
-  torpedo: boolean;
-}
+export { fireTexture, smokeTexture, flameTexture } from "./fxTextures";
+
+const { cloud, glow, fire, spray, ring, sheet } = fxTextures;
+
+/** Translates server combat events into muzzle blasts, splashes, explosions and wrecks of smoke. */
 export class CombatEffects {
-  private particles: Particle[] = [];
-  private rounds = new Map<number, Round>();
-  private snapshot: Snapshot | null = null;
-  private received = 0;
-  private demos: Projectile[] = [];
+  private ps: ParticleSystem;
+  private tracks: ShellTracks;
   private serial = -1000;
   private emitted = 0;
-  constructor(private scene: THREE.Scene) {}
+  constructor(scene: THREE.Scene) {
+    this.ps = new ParticleSystem(scene);
+    this.tracks = new ShellTracks(scene, this.ps);
+  }
+  set budget(value: number) {
+    this.ps.budget = value;
+  }
   get diagnostics() {
     return {
-      particles: this.particles.length,
-      rounds: this.rounds.size,
+      particles: this.ps.count,
+      rounds: this.tracks.size,
       emitted: this.emitted,
     };
   }
-  private particle(
-    object: THREE.Object3D,
-    life: number,
-    velocity: THREE.Vector3,
-    gravity = 0,
-    grow = 0,
-    kind = "smoke",
-  ) {
-    this.scene.add(object);
-    const material = (object as THREE.Sprite).material as THREE.SpriteMaterial;
-    this.particles.push({
-      object,
-      age: 0,
-      life,
-      velocity,
-      gravity,
-      grow,
-      opacity: material?.opacity ?? 1,
-      kind,
-      startScale: object.scale.clone(),
-    });
-  }
-  private puff(
-    position: THREE.Vector3,
-    size: number,
-    color: string,
-    life: number,
-    velocity: THREE.Vector3,
-    grow: number,
-    flash = false,
-  ) {
-    const sprite = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: flash ? glow : cloud,
-        color,
-        transparent: true,
-        opacity: flash ? 1 : 0.68,
-        depthWrite: false,
-        blending: flash ? THREE.AdditiveBlending : THREE.NormalBlending,
-      }),
-    );
-    sprite.position.copy(position);
-    sprite.scale.set(size, size, 1);
-    sprite.material.rotation = Math.random() * Math.PI * 2;
-    this.particle(sprite, life, velocity, 0, grow, flash ? "flash" : "smoke");
+  private get crowded() {
+    return this.ps.crowded;
   }
   event(e: GameEvent, visual?: Pick<WarshipModel, "root" | "turrets">) {
     this.emitted++;
-    const position = new THREE.Vector3(e.x, 2, e.z);
-    if (e.type === "shot" && !["TORP", "MINE"].includes(e.text ?? "")) {
-      const heavy = (e.caliber ?? 203) >= 300,
-        indices =
-          e.turrets ?? (["SECONDARY", "RBU"].includes(e.text ?? "") ? [] : [0]);
-      if (visual) visual.root.updateMatrixWorld(true);
-      const origins: THREE.Vector3[] = [];
-      for (const index of indices) {
-        const turret = visual?.turrets[index];
-        if (!turret) continue;
-        turret.userData.firedAt = performance.now() / 1000;
-        if (e.elevation !== undefined)
-          turret.userData.desiredElevation = e.elevation;
-        const local = new THREE.Vector3(0, 1.08, turret.userData.muzzleZ ?? 5);
-        const barrel = turret.userData.recoil as THREE.Group | undefined;
-        origins.push((barrel ?? turret).localToWorld(local));
-      }
-      if (!origins.length) origins.push(position.clone().setY(5));
-      for (const origin of origins) {
-        this.puff(
-          origin,
-          heavy ? 11 : 6,
-          "#ffe2ac",
-          0.13,
-          new THREE.Vector3(),
-          12,
-          true,
-        );
-        for (let n = 0; n < (heavy ? 6 : 3); n++) {
-          const a = Math.random() * Math.PI * 2;
-          this.puff(
-            origin.clone(),
-            2 + Math.random() * 2,
-            "#aeb2af",
-            2.8 + Math.random(),
-            new THREE.Vector3(
-              Math.sin(a) * 3,
-              1.8 + Math.random() * 2,
-              Math.cos(a) * 3,
-            ),
-            4.7,
-          );
-        }
-        const light = new THREE.PointLight("#ffb76d", heavy ? 180 : 80, 35, 2);
-        light.position.copy(origin);
-        this.particle(light, 0.12, new THREE.Vector3(), 0, 0, "light");
-      }
-    } else if (e.type === "splash") {
-      if (e.text === "island") {
-        for (let n = 0; n < 9; n++)
-          this.puff(
-            position.clone(),
-            4,
-            "#8b8371",
-            2.4,
-            new THREE.Vector3(
-              (Math.random() - 0.5) * 8,
-              4 + Math.random() * 5,
-              (Math.random() - 0.5) * 8,
-            ),
-            5,
-          );
-        return;
-      }
-      const scale =
-        e.text === "island"
-          ? 0.55
-          : (e.caliber ?? 203) >= 300
-            ? 1.8
-            : e.text === "RBU"
-              ? 1.1
-              : 1.35;
-      const column = new THREE.Mesh(
-        columnGeometry,
-        new THREE.MeshBasicMaterial({
-          color: "#c0d9de",
-          transparent: true,
-          opacity: 0.82,
-          depthWrite: false,
-        }),
+    if (e.type === "shot" && !["TORP", "MINE"].includes(e.text ?? ""))
+      this.muzzle(e, visual);
+    else if (e.type === "shot" && e.text === "TORP")
+      this.launch(new THREE.Vector3(e.x, 1, e.z));
+    else if (e.type === "splash") this.splash(e);
+    else if (e.type === "intercept") {
+      const p = new THREE.Vector3(e.x, 1, e.z);
+      this.waterBurst(p, 1.25);
+      this.ps.flash(p.clone().setY(2), 14, 0.2, 30);
+    } else if (e.type === "hit") this.hit(e);
+    else if (e.type === "sink") this.sink(e);
+  }
+
+  private muzzle(
+    e: GameEvent,
+    visual?: Pick<WarshipModel, "root" | "turrets">,
+  ) {
+    const caliber = e.caliber ?? 203,
+      minor = ["SECONDARY", "RBU"].includes(e.text ?? ""),
+      power = minor ? 0.45 : THREE.MathUtils.clamp(caliber / 260, 0.55, 1.6);
+    const indices = e.turrets ?? (minor ? [] : [0]);
+    if (visual) visual.root.updateMatrixWorld(true);
+    const muzzles: { origin: THREE.Vector3; dir: THREE.Vector3 }[] = [];
+    for (const index of indices) {
+      const turret = visual?.turrets[index];
+      if (!turret) continue;
+      turret.userData.firedAt = performance.now() / 1000;
+      if (e.elevation !== undefined)
+        turret.userData.desiredElevation = e.elevation;
+      const barrel =
+        (turret.userData.recoil as THREE.Group | undefined) ?? turret;
+      const origin = barrel.localToWorld(
+        new THREE.Vector3(0, 1.08, turret.userData.muzzleZ ?? 5),
       );
-      column.position.set(e.x, 0.2, e.z);
-      column.scale.setScalar(scale);
-      this.particle(column, 1.9, new THREE.Vector3(), 0, 0, "column");
-      const ring = new THREE.Mesh(
-        ringGeometry,
-        new THREE.MeshBasicMaterial({
-          color: "#c5dfdc",
-          transparent: true,
-          opacity: 0.4,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        }),
-      );
-      ring.position.set(e.x, 0.24, e.z);
-      ring.scale.setScalar(3);
-      this.particle(ring, 3.6, new THREE.Vector3(), 0, 10 * scale, "ring");
-      for (let n = 0; n < Math.ceil(22 * scale); n++) {
-        const a = n * 2.399;
-        this.puff(
-          position.clone(),
-          1.6 * scale,
-          "#e5eded",
-          1.5,
-          new THREE.Vector3(
-            Math.sin(a) * (3 + Math.random() * 7) * scale,
-            (9 + Math.random() * 17) * scale,
-            Math.cos(a) * (3 + Math.random() * 7) * scale,
-          ),
-          0.3,
-        );
-        this.particles[this.particles.length - 1].gravity = 17;
-      }
-      this.puff(
-        position.clone().setY(2),
-        12 * scale,
-        "#c3d6d8",
-        2.7,
-        new THREE.Vector3(2, 2, 0),
-        9,
-      );
-    } else if (e.type === "intercept") {
-      this.puff(position, 10, "#d9eff6", 0.25, new THREE.Vector3(), 22, true);
-    } else if (e.type === "hit" || e.type === "sink") {
-      const big = e.type === "sink";
-      const strength = big
-        ? 3.5
-        : Math.min(2.8, 0.8 + Math.sqrt((e.damage ?? 0) / 1600));
-      const blocked = e.type === "hit" && !(e.damage && e.damage > 0);
-      const amount = big ? 28 : blocked ? 4 : Math.ceil(7 * strength);
-      this.puff(
-        position.clone().setY(e.y ?? 4),
-        big ? 34 : blocked ? 3 : 10 * strength,
-        blocked ? "#e6f1ff" : "#ffc16a",
-        big ? 1.6 : blocked ? 0.18 : 0.75,
-        new THREE.Vector3(),
-        8,
-        true,
-      );
-      if (!blocked)
-        for (let n = 0; n < (big ? 10 : 4); n++) {
-          const sprite = new THREE.Sprite(
-            new THREE.SpriteMaterial({
-              map: fireTexture,
-              transparent: true,
-              opacity: 1,
-              depthWrite: false,
-              blending: THREE.AdditiveBlending,
-            }),
-          );
-          sprite.position.set(
-            e.x + Math.sin(n * 2.399) * strength,
-            e.y ?? 4,
-            e.z + Math.cos(n * 2.399) * strength,
-          );
-          sprite.scale.set(
-            (big ? 7 : 3) * strength,
-            (big ? 12 : 6) * strength,
+      const dir = new THREE.Vector3(0, 0, 1)
+        .transformDirection(barrel.matrixWorld)
+        .normalize();
+      muzzles.push({ origin, dir });
+    }
+    if (!muzzles.length)
+      muzzles.push({
+        origin: new THREE.Vector3(e.x, 5, e.z),
+        dir: new THREE.Vector3(0, 0.3, 1).normalize(),
+      });
+    for (const { origin, dir } of muzzles) {
+      this.ps.flash(origin, 9 * power, 0.09, 40 * power);
+      // Directional jet: flame sprites stepping out along the bore.
+      for (let n = 0; n < (minor ? 2 : 5); n++) {
+        const d = (1.6 + n * 2.4) * power,
+          size = (7.5 - n * 1.1) * power;
+        this.ps.spawn(
+          this.ps.sprite(
+            n < 2 ? glow : fire,
+            HDR_FIRE,
             1,
-          );
-          this.particle(
-            sprite,
-            big ? 3 : 1.6,
-            new THREE.Vector3(
-              (Math.random() - 0.5) * 3,
-              2 + Math.random() * 3,
-              (Math.random() - 0.5) * 3,
+            origin.clone().addScaledVector(dir, d),
+            size,
+            true,
+          ),
+          {
+            life: 0.1 + n * 0.025,
+            velocity: dir.clone().multiplyScalar(30 * power),
+            grow: 18 * power,
+            kind: "flash",
+          },
+        );
+      }
+      // Cordite smoke blown down-range, then left hanging in the wind.
+      const puffs = this.crowded ? 3 : minor ? 3 : Math.round(6 + power * 5);
+      for (let n = 0; n < puffs; n++) {
+        const along = rand(1, 12) * power;
+        this.ps.smoke(
+          origin.clone().addScaledVector(dir, along),
+          rand(3, 5.5) * power,
+          n % 3 ? "#8f8a80" : "#b5ad9f",
+          rand(3.5, 6),
+          dir
+            .clone()
+            .multiplyScalar(rand(16, 34) * power)
+            .add(randomUnit().multiplyScalar(3)),
+          rand(3.5, 6) * power,
+          0.62,
+          1.9,
+        );
+      }
+      if (!minor && power > 0.8) {
+        // Blast overpressure flattening the sea beside the hull.
+        const water = origin
+          .clone()
+          .addScaledVector(dir, 7 * power)
+          .setY(0.6);
+        this.ps.decal(water, 4, 45 * power, 0.55, 0.3, ring, "shock");
+        for (let n = 0; n < 5; n++)
+          this.ps.spawn(
+            this.ps.sprite(
+              spray,
+              "#dfe9ea",
+              0.5,
+              water.clone().setY(1.5),
+              4 * power,
             ),
-            0,
-            2,
-            "fire",
+            {
+              life: rand(0.9, 1.5),
+              velocity: dir
+                .clone()
+                .setY(0)
+                .normalize()
+                .multiplyScalar(rand(8, 18))
+                .add(new THREE.Vector3(rand(-3, 3), rand(1, 3), rand(-3, 3))),
+              grow: 6,
+              drag: 1.5,
+              kind: "spray",
+            },
           );
-        }
-      for (let n = 0; n < amount; n++) {
-        const a = n * 2.399;
-        this.puff(
-          position.clone().setY(e.y ?? 4),
-          big ? 13 : 4 * strength,
-          n % 3 ? "#444b50" : "#9c8c73",
-          big ? 9 : 3.5,
-          new THREE.Vector3(
-            Math.sin(a) * (big ? 9 : 4 * strength),
-            3 + Math.random() * 6,
-            Math.cos(a) * (big ? 9 : 4 * strength),
-          ),
-          big ? 9 : 4 * strength,
-        );
       }
-      for (let n = 0; n < (big ? 18 : 8); n++) {
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(0.045, 0.045, 0.8 + Math.random() * 1.2),
-          new THREE.MeshBasicMaterial({
-            color: "#ffd3a0",
-            transparent: true,
-            opacity: 1,
-            depthWrite: false,
-          }),
-        );
-        mesh.position.copy(position).setY(e.y ?? 4);
-        mesh.quaternion.setFromEuler(
-          new THREE.Euler(Math.random() * 3, Math.random() * 3, 0),
-        );
-        this.particle(
-          mesh,
-          0.5 + Math.random() * 0.4,
-          new THREE.Vector3(
-            (Math.random() - 0.5) * 25,
-            Math.random() * 20,
-            (Math.random() - 0.5) * 25,
-          ),
-          20,
-          0,
-          "spark",
-        );
-      }
+      this.ps.flashLight(origin, (minor ? 120 : 520) * power, 60 * power, 0.14);
     }
   }
+
+  private launch(position: THREE.Vector3) {
+    for (let n = 0; n < 4; n++)
+      this.ps.spawn(this.ps.sprite(spray, "#e8f0f0", 0.6, position, 2.2), {
+        life: 1.1,
+        velocity: new THREE.Vector3(rand(-3, 3), rand(3, 6), rand(-3, 3)),
+        gravity: 12,
+        grow: 2,
+        kind: "spray",
+      });
+  }
+
+  /** Water impact: rising column, spray plumes, droplet crown, base surge and lingering foam. */
+  private waterBurst(position: THREE.Vector3, scale: number) {
+    const base = position.clone().setY(0.3);
+    // Translucent core gives the column its silhouette; spray sprites give it volume.
+    const column = this.ps.mesh(columnGeometry, "#e2ecee", 0.85, base, {
+      map: sheet,
+    });
+    column.scale.set(scale * 1.25, scale * 1.35, scale * 1.25);
+    this.ps.spawn(column, { life: 2.6, kind: "column" });
+    const plumes = this.crowded ? 3 : 8;
+    for (let n = 0; n < plumes; n++)
+      this.ps.spawn(
+        this.ps.sprite(
+          n % 3 ? spray : cloud,
+          "#f0f5f5",
+          0.85,
+          base
+            .clone()
+            .add(
+              new THREE.Vector3(rand(-1.5, 1.5), 2 * scale, rand(-1.5, 1.5)),
+            ),
+          rand(5, 9) * scale,
+        ),
+        {
+          life: rand(2.2, 3),
+          velocity: new THREE.Vector3(
+            rand(-2.5, 2.5),
+            (8 + n * 3.2 + rand(0, 3)) * scale,
+            rand(-2.5, 2.5),
+          ),
+          gravity: 9,
+          drag: 0.35,
+          grow: 5 * scale,
+          kind: "spray",
+          fadeIn: 0.04,
+        },
+      );
+    const droplets = Math.ceil((this.crowded ? 10 : 26) * scale);
+    for (let n = 0; n < droplets; n++) {
+      const a = n * 2.399,
+        out = rand(3, 9) * scale;
+      this.ps.spawn(
+        this.ps.sprite(
+          spray,
+          "#f2f6f6",
+          0.85,
+          base.clone().setY(1),
+          rand(1.4, 2.6) * scale,
+        ),
+        {
+          life: rand(1.3, 2.1),
+          velocity: new THREE.Vector3(
+            Math.sin(a) * out,
+            rand(8, 20) * scale,
+            Math.cos(a) * out,
+          ),
+          gravity: 17,
+          grow: 1.2,
+          kind: "spray",
+        },
+      );
+    }
+    for (let n = 0; n < (this.crowded ? 4 : 10); n++) {
+      const a = (n / 10) * Math.PI * 2 + rand(0, 0.4);
+      this.ps.smoke(
+        base.clone().setY(1.6),
+        rand(5, 8) * scale,
+        "#cfdcdd",
+        rand(2.6, 3.6),
+        new THREE.Vector3(Math.sin(a), 0.15, Math.cos(a)).multiplyScalar(
+          rand(7, 12) * scale,
+        ),
+        6 * scale,
+        0.5,
+        0.9,
+      );
+    }
+    this.ps.decal(base.clone().setY(0.55), 5 * scale, 4 * scale, 8, 0.75);
+    this.ps.decal(
+      base.clone().setY(0.5),
+      3 * scale,
+      42 * scale,
+      3.6,
+      0.45,
+      ring,
+      "shock",
+    );
+  }
+
+  private splash(e: GameEvent) {
+    const position = new THREE.Vector3(e.x, 0.3, e.z);
+    if (e.text === "island") {
+      const p = position.clone().setY(e.y ?? 3);
+      this.ps.flash(p, 6, 0.1, 30);
+      for (let n = 0; n < 10; n++)
+        this.ps.smoke(
+          p.clone(),
+          rand(3.5, 6),
+          n % 2 ? "#7d705c" : "#9b8e77",
+          rand(2.4, 3.6),
+          new THREE.Vector3(rand(-6, 6), rand(4, 11), rand(-6, 6)),
+          5,
+          0.8,
+          0.7,
+        );
+      for (let n = 0; n < 8; n++) this.debris(p, 0.6, "#5b5143");
+      return;
+    }
+    const caliber = e.caliber ?? 203,
+      scale =
+        e.text === "RBU"
+          ? 0.95
+          : e.text === "MINE"
+            ? 2.1
+            : THREE.MathUtils.clamp(0.5 + caliber / 360, 0.75, 1.75);
+    this.waterBurst(position, scale);
+    if (e.text === "MINE" || e.text === "RBU")
+      this.ps.flashLight(position.clone().setY(3), 260, 50, 0.2, "#d7f1ff");
+  }
+
+  private debris(origin: THREE.Vector3, power: number, color = "#4a4541") {
+    // Lit steel plates so tumbling fragments catch the sun instead of reading as black cut-outs.
+    const m = new THREE.Mesh(
+      debrisGeometry,
+      new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.7,
+        metalness: 0.55,
+        transparent: true,
+      }),
+    );
+    m.position.copy(origin);
+    m.scale.setScalar(rand(0.25, 0.7) * Math.min(1.5, Math.max(0.7, power)));
+    m.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3));
+    this.ps.spawn(m, {
+      life: 4,
+      velocity: new THREE.Vector3(
+        rand(-1, 1) * 14 * power,
+        rand(9, 24) * power,
+        rand(-1, 1) * 14 * power,
+      ),
+      gravity: 24,
+      kind: "debris",
+      spin: new THREE.Vector3(rand(-9, 9), rand(-9, 9), rand(-9, 9)),
+    });
+  }
+
+  private sparks(
+    origin: THREE.Vector3,
+    count: number,
+    speed: number,
+    hot = true,
+  ) {
+    for (let n = 0; n < count; n++) {
+      const m = this.ps.mesh(
+        sparkGeometry,
+        hot ? "#ffc070" : "#fff4dc",
+        1,
+        origin,
+        {
+          additive: true,
+        },
+      );
+      m.material.color.multiplyScalar(hot ? 4 : 3);
+      const v = randomUnit()
+        .add(new THREE.Vector3(0, 0.8, 0))
+        .normalize()
+        .multiplyScalar(rand(0.4, 1) * speed);
+      m.scale.set(1, 1, rand(0.8, 2.2));
+      m.lookAt(origin.clone().add(v));
+      this.ps.spawn(m, {
+        life: rand(0.35, 0.8),
+        velocity: v,
+        gravity: 22,
+        kind: "spark",
+      });
+    }
+  }
+
+  private blasts: { at: number; position: THREE.Vector3 }[] = [];
+  /** Shells of one salvo land together; later blasts at the same spot are damped to avoid whiteout. */
+  private overlap(origin: THREE.Vector3) {
+    this.blasts = this.blasts.filter((b) => this.ps.clock - b.at < 0.3);
+    const count = this.blasts.filter(
+      (b) => b.position.distanceTo(origin) < 35,
+    ).length;
+    this.blasts.push({ at: this.ps.clock, position: origin.clone() });
+    return 1 / (1 + count * 0.9);
+  }
+  private explosion(origin: THREE.Vector3, power: number, smokeLife = 6) {
+    const damp = this.overlap(origin);
+    this.ps.flash(
+      origin,
+      12 * power * Math.sqrt(damp),
+      0.12,
+      55 * power * damp,
+    );
+    // Shock front: additive ring sprite racing outward.
+    if (damp === 1)
+      this.ps.spawn(
+        this.ps.sprite(ring, "#ffd9a8", 0.6, origin, 3 * power, true),
+        {
+          life: 0.32,
+          grow: 110 * power,
+          kind: "flash",
+        },
+      );
+    const balls = this.crowded
+      ? 4
+      : Math.round((6 + power * 4) * Math.sqrt(damp));
+    for (let n = 0; n < balls; n++)
+      this.ps.spawn(
+        this.ps.sprite(
+          n % 2 ? fire : glow,
+          HDR_FIRE,
+          1,
+          origin,
+          rand(4, 7) * power,
+          true,
+        ),
+        {
+          life: rand(0.55, 1.05),
+          velocity: randomUnit()
+            .add(new THREE.Vector3(0, 0.6, 0))
+            .multiplyScalar(rand(5, 11) * power),
+          drag: 2.6,
+          grow: 9 * power,
+          kind: "fire",
+          colorFrom: HDR_FIRE.clone().multiplyScalar(rand(1, 1.6)),
+          colorTo: EMBER,
+        },
+      );
+    this.sparks(
+      origin,
+      Math.round((this.crowded ? 6 : 14) * power),
+      30 * power,
+    );
+    for (let n = 0; n < Math.round((this.crowded ? 2 : 5) * power); n++)
+      this.debris(origin, power);
+    const puffs = Math.round((this.crowded ? 4 : 9) * power);
+    for (let n = 0; n < puffs; n++)
+      this.ps.smoke(
+        origin.clone().add(randomUnit().multiplyScalar(power)),
+        rand(4, 7) * power,
+        n % 4 ? "#2a2d2f" : "#4d4642",
+        rand(smokeLife * 0.7, smokeLife),
+        new THREE.Vector3(rand(-6, 6), rand(4, 9), rand(-6, 6)).multiplyScalar(
+          Math.sqrt(power),
+        ),
+        6.5 * power,
+        0.6,
+        0.6,
+      );
+    this.ps.flashLight(origin, 900 * power * damp, 110 * power, 0.32);
+  }
+
+  private hit(e: GameEvent) {
+    const origin = new THREE.Vector3(e.x, e.y ?? 4, e.z);
+    const damage = e.damage ?? 0;
+    const underwater =
+      e.weapon === "TORP" ||
+      e.weapon === "MINE" ||
+      e.result === "torpedo" ||
+      e.result === "mine";
+    if (underwater) {
+      this.waterBurst(origin.clone().setY(0.3), 2.2);
+      this.explosion(origin.clone().setY(2), 1.6, 7);
+      return;
+    }
+    if (!(damage > 0)) {
+      // Ricochet, shattered shell or spawn protection: sparks without a fireball.
+      this.ps.flash(origin, 5, 0.08, 25);
+      this.sparks(origin, e.result === "ricochet" ? 16 : 10, 26, false);
+      this.ps.smoke(
+        origin,
+        2.5,
+        "#6b6b68",
+        1.6,
+        new THREE.Vector3(0, 2, 0),
+        3,
+        0.5,
+      );
+      return;
+    }
+    const power = Math.min(2.6, 0.7 + Math.sqrt(damage / 1700));
+    this.explosion(origin, power);
+    if (e.result === "citadel")
+      this.ps.later(0.16, () => {
+        // Secondary detonation venting a jet of flame upward.
+        this.explosion(origin.clone().setY(origin.y + 2), power * 1.25, 8);
+        for (let n = 0; n < 6; n++)
+          this.ps.spawn(
+            this.ps.sprite(
+              fire,
+              HDR_FIRE,
+              1,
+              origin,
+              [4 * power, 9 * power],
+              true,
+            ),
+            {
+              life: rand(0.6, 1),
+              velocity: new THREE.Vector3(
+                rand(-2, 2),
+                rand(18, 32),
+                rand(-2, 2),
+              ),
+              drag: 1.4,
+              grow: 6,
+              kind: "fire",
+              colorFrom: HDR_FIRE.clone(),
+              colorTo: EMBER,
+            },
+          );
+      });
+  }
+
+  private sink(e: GameEvent) {
+    const origin = new THREE.Vector3(e.x, 6, e.z);
+    this.explosion(origin, 3.4, 12);
+    for (let n = 1; n < 4; n++)
+      this.ps.later(n * 0.32, () =>
+        this.explosion(
+          origin
+            .clone()
+            .add(new THREE.Vector3(rand(-18, 18), rand(-2, 3), rand(-18, 18))),
+          rand(1.6, 2.4),
+          10,
+        ),
+      );
+    this.waterBurst(origin.clone().setY(0.3), 2.4);
+    // Towering column of oily smoke.
+    for (let n = 0; n < (this.crowded ? 8 : 22); n++)
+      this.ps.smoke(
+        origin
+          .clone()
+          .add(new THREE.Vector3(rand(-8, 8), rand(0, 10), rand(-8, 8))),
+        rand(12, 20),
+        n % 3 ? "#1d1f21" : "#3a3533",
+        rand(11, 16),
+        new THREE.Vector3(rand(-2, 2), rand(7, 14), rand(-2, 2)),
+        6,
+        0.85,
+        0.25,
+      );
+  }
+
+  /** Continuous emitters driven by the scene for burning, damaged or moving ships. */
+  burn(position: THREE.Vector3, dt: number, intensity = 1) {
+    if (Math.random() < dt * 16 * intensity)
+      this.ps.spawn(
+        this.ps.sprite(
+          fire,
+          HDR_FIRE,
+          1,
+          position
+            .clone()
+            .add(new THREE.Vector3(rand(-1.5, 1.5), 0, rand(-1.5, 1.5))),
+          [3.5, 6],
+          true,
+        ),
+        {
+          life: rand(0.5, 0.85),
+          velocity: new THREE.Vector3(
+            rand(-0.6, 0.6),
+            rand(4, 7),
+            rand(-0.6, 0.6),
+          ),
+          grow: 2.5,
+          wind: 0.6,
+          kind: "fire",
+          colorFrom: HDR_FIRE.clone().multiplyScalar(rand(0.7, 1.2)),
+          colorTo: EMBER,
+        },
+      );
+    if (!this.crowded && Math.random() < dt * 7 * intensity)
+      this.ps.smoke(
+        position.clone().setY(position.y + 4),
+        rand(5, 8),
+        Math.random() < 0.7 ? "#25282a" : "#3e3b38",
+        rand(7, 10),
+        new THREE.Vector3(rand(-2, 2), rand(5, 8), rand(-2, 2)),
+        6,
+        0.55,
+        0.3,
+      );
+  }
+  smolder(position: THREE.Vector3, dt: number, amount: number) {
+    if (!this.crowded && Math.random() < dt * 4 * amount)
+      this.ps.smoke(
+        position.clone(),
+        rand(3, 5),
+        "#4b4f52",
+        rand(4, 6),
+        new THREE.Vector3(rand(-0.5, 0.5), rand(3, 5), rand(-0.5, 0.5)),
+        3.5,
+        0.5 * amount,
+        0.3,
+      );
+  }
+  wake(
+    stern: THREE.Vector3,
+    bow: THREE.Vector3,
+    side: THREE.Vector3,
+    speed: number,
+    dt: number,
+  ) {
+    if (this.crowded || speed < 2) return;
+    if (Math.random() < dt * Math.min(6, speed * 0.32))
+      this.ps.decal(
+        stern.clone().setY(0.45),
+        rand(5, 8),
+        2.2 + speed * 0.1,
+        rand(6, 8),
+        0.5,
+      );
+    if (speed > 9 && Math.random() < dt * speed * 0.35) {
+      const out = side.clone().multiplyScalar(Math.random() < 0.5 ? -1 : 1);
+      this.ps.spawn(
+        this.ps.sprite(
+          spray,
+          "#eef4f4",
+          0.55,
+          bow.clone().addScaledVector(out, 2).setY(1.2),
+          rand(1.8, 3),
+        ),
+        {
+          life: rand(0.7, 1.1),
+          velocity: out
+            .multiplyScalar(rand(3, 6))
+            .add(new THREE.Vector3(0, rand(2.5, 4.5), 0)),
+          gravity: 10,
+          grow: 2.5,
+          kind: "spray",
+        },
+      );
+    }
+  }
+
   demo(model: Pick<WarshipModel, "root" | "turrets">, caliber: number) {
     const e: GameEvent = {
       id: --this.serial,
@@ -381,195 +624,22 @@ export class CombatEffects {
       turrets: model.turrets.map((_, i) => i),
     };
     this.event(e, model);
-    model.root.updateMatrixWorld(true);
-    for (const turret of model.turrets) {
-      const origin = (
-          (turret.userData.recoil as THREE.Group | undefined) ?? turret
-        ).localToWorld(
-          new THREE.Vector3(0, 1.08, turret.userData.muzzleZ ?? 5),
-        ),
-        direction = new THREE.Vector3(0, 0, 1).transformDirection(
-          turret.matrixWorld,
-        );
-      for (let n = 0; n < 3; n++)
-        this.demos.push({
-          id: --this.serial,
-          owner: "demo",
-          kind: "AP",
-          x: origin.x,
-          z: origin.z,
-          y: origin.y,
-          vx: direction.x * 135 + (Math.random() - 0.5) * 3,
-          vz: direction.z * 135 + (Math.random() - 0.5) * 3,
-          vy: 34,
-          age: 0,
-          life: 4,
-          damage: 0,
-          caliber,
-          range: 1000,
-          distance: 0,
-          start: { x: origin.x, z: origin.z },
-        });
-    }
+    this.tracks.launchDemo(model, caliber, () => --this.serial);
     return e;
   }
-  private round(p: Projectile) {
-    const root = new THREE.Group(),
-      torpedo = p.kind === "TORP";
-    const metal = new THREE.MeshStandardMaterial({
-      color: torpedo ? "#2a373b" : "#4f4b45",
-      roughness: 0.36,
-      metalness: 0.8,
-    });
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        torpedo ? 0.18 : 0.1,
-        torpedo ? 0.21 : 0.115,
-        torpedo ? 3 : 0.7,
-        10,
-      ),
-      metal,
+  update(
+    dt: number,
+    snapshot: Parameters<ShellTracks["update"]>[1],
+    playing: boolean,
+    camera?: THREE.PerspectiveCamera,
+  ) {
+    this.tracks.update(
+      dt,
+      snapshot,
+      playing,
+      (e) => this.event(e),
+      () => --this.serial,
     );
-    const tip = new THREE.Mesh(
-      new THREE.ConeGeometry(torpedo ? 0.18 : 0.1, torpedo ? 0.65 : 0.28, 10),
-      metal,
-    );
-    tip.position.y = torpedo ? 1.8 : 0.48;
-    root.add(body, tip);
-    const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(),
-        new THREE.Vector3(),
-      ]),
-      new THREE.LineBasicMaterial({
-        color: torpedo ? "#c1e5df" : p.kind === "AP" ? "#ffbc79" : "#ffe2b1",
-        transparent: true,
-        opacity: torpedo ? 0.55 : 0.9,
-        depthWrite: false,
-      }),
-    );
-    this.scene.add(root, line);
-    return { root, trail: line, torpedo };
-  }
-  update(dt: number, snapshot: Snapshot | null, playing: boolean) {
-    const now = performance.now() / 1000;
-    if (snapshot !== this.snapshot) {
-      this.snapshot = snapshot;
-      this.received = now;
-    }
-    const elapsed = Math.min(0.1, now - this.received);
-    const all = playing
-      ? (snapshot?.projectiles ?? []).filter((p) => !p.delay || p.delay <= 0)
-      : this.demos;
-    if (!playing) {
-      for (const p of this.demos) {
-        p.age += dt;
-        p.x += p.vx * dt;
-        p.z += p.vz * dt;
-        p.y += p.vy * dt - RULES.gravity * 0.5 * dt * dt;
-        p.vy -= RULES.gravity * dt;
-        if (p.y <= 0) {
-          this.event({
-            id: --this.serial,
-            at: 0,
-            type: "splash",
-            x: p.x,
-            z: p.z,
-            caliber: p.caliber,
-          });
-          p.life = 0;
-        }
-      }
-      this.demos = this.demos.filter((p) => p.life > 0 && p.age < p.life);
-    }
-    const ids = new Set(all.map((p) => p.id));
-    for (const [id, r] of this.rounds)
-      if (!ids.has(id)) {
-        this.scene.remove(r.root, r.trail);
-        r.root.traverse((o) => {
-          if (o instanceof THREE.Mesh) {
-            o.geometry.dispose();
-            (o.material as THREE.Material).dispose();
-          }
-        });
-        r.trail.geometry.dispose();
-        (r.trail.material as THREE.Material).dispose();
-        this.rounds.delete(id);
-      }
-    for (const p of all) {
-      let r = this.rounds.get(p.id);
-      if (!r) {
-        r = this.round(p);
-        this.rounds.set(p.id, r);
-      }
-      const age = playing ? elapsed : 0,
-        pos = new THREE.Vector3(
-          p.x + p.vx * age,
-          Math.max(
-            0.2,
-            p.y +
-              p.vy * age -
-              (r.torpedo ? 0 : RULES.gravity * 0.5 * age * age),
-          ),
-          p.z + p.vz * age,
-        ),
-        velocity = new THREE.Vector3(
-          p.vx,
-          r.torpedo ? 0 : p.vy - RULES.gravity * age,
-          p.vz,
-        );
-      r.root.position.copy(pos);
-      r.root.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        velocity.clone().normalize(),
-      );
-      const length = r.torpedo ? 0.28 : 0.09,
-        previous = pos.clone().addScaledVector(velocity, -length),
-        positions = r.trail.geometry.attributes.position;
-      positions.setXYZ(0, pos.x, pos.y, pos.z);
-      positions.setXYZ(1, previous.x, Math.max(0.2, previous.y), previous.z);
-      positions.needsUpdate = true;
-      r.trail.geometry.computeBoundingSphere();
-    }
-    for (const p of this.particles) {
-      p.age += dt;
-      p.object.position.addScaledVector(p.velocity, dt);
-      p.velocity.y -= p.gravity * dt;
-      if (p.kind === "light")
-        (p.object as THREE.PointLight).intensity *= Math.exp(-dt * 30);
-      else {
-        const material = (p.object as THREE.Sprite)
-          .material as THREE.SpriteMaterial;
-        material.opacity =
-          p.opacity * Math.pow(Math.max(0, 1 - p.age / p.life), 0.7);
-        if (p.kind === "column")
-          p.object.scale.y =
-            Math.max(0.04, Math.sin(Math.min(1, p.age / p.life) * Math.PI)) *
-            p.startScale.y;
-        else if (p.kind === "ring") {
-          p.object.scale.x = p.object.scale.z = p.startScale.x + p.age * p.grow;
-          p.object.scale.y = 1;
-        } else {
-          p.object.scale.x = p.startScale.x + p.age * p.grow;
-          p.object.scale.y = p.startScale.y + p.age * p.grow;
-        }
-        if (p.kind === "smoke" && material.rotation !== undefined)
-          material.rotation += dt * 0.05;
-      }
-      if (p.age >= p.life) {
-        this.scene.remove(p.object);
-        if (p.kind !== "light") {
-          const obj = p.object as THREE.Mesh;
-          if (
-            obj.geometry &&
-            obj.geometry !== columnGeometry &&
-            obj.geometry !== ringGeometry
-          )
-            obj.geometry.dispose();
-          (obj.material as THREE.Material).dispose();
-        }
-      }
-    }
-    this.particles = this.particles.filter((p) => p.age < p.life);
+    this.ps.update(dt, camera);
   }
 }

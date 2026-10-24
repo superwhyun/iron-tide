@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { Vector3 } from "three";
 import {
   Game,
   makeShip,
@@ -92,8 +93,39 @@ describe("navigation and weapon authority", () => {
     a.heading = 0;
     g.setInput("a", { ...a.input, throttle: 5 });
     tick(g, 15);
-    const coast = shoreRadius(ISLANDS[0], Math.PI);
-    expect(a.z).toBeLessThan(-coast - HULLS.cruiser.length * 0.35 + 1);
+    // The hull may scrape sideways along the coast, but never inside it.
+    const island = ISLANDS[0],
+      angle = Math.atan2(a.x - island.x, a.z - island.z);
+    expect(a.z).toBeLessThan(0);
+    expect(Math.hypot(a.x - island.x, a.z - island.z)).toBeGreaterThan(
+      shoreRadius(island, angle) + HULLS.cruiser.length * 0.35 - 1,
+    );
+  });
+  it("each sinking waits longer to respawn, up to 20 seconds", () => {
+    const { g, a, b } = battle();
+    const waits: number[] = [];
+    for (let n = 0; n < 5; n++) {
+      b.status.protection = 0;
+      g.damage(b, 1e6, "a", "penetration");
+      waits.push(Math.round(b.respawnAt - g.time));
+      while (!b.alive) tick(g, 1);
+    }
+    expect(waits).toEqual([5, 10, 15, 20, 20]);
+    expect(a.stats.kills).toBe(5);
+  });
+  it("a grounded ship can pivot with engines stopped and scrape free with rudder", () => {
+    const { g, a } = battle();
+    Object.assign(a, { x: 0, z: -180, heading: 0 });
+    g.setInput("a", { ...a.input, throttle: 5, rudder: 0 });
+    tick(g, 15);
+    expect(a.grounded).toBe(true);
+    const pinned = a.heading;
+    g.setInput("a", { ...a.input, throttle: 1, rudder: 1 });
+    tick(g, 5);
+    expect(Math.abs(a.heading - pinned)).toBeGreaterThan(0.3);
+    g.setInput("a", { ...a.input, throttle: 5, rudder: 1 });
+    tick(g, 20);
+    expect(a.grounded).toBe(false);
   });
   it("turrets rotate and respect arcs, reload and salvo cannot duplicate shots", () => {
     const { g, a } = battle();
@@ -148,6 +180,56 @@ describe("navigation and weapon authority", () => {
   });
 });
 describe("armor, concealment and defensive choices", () => {
+  it("only HE that actually damages the ship can start a fire", () => {
+    const g = new Game("FIRE", 480, () => 0);
+    g.add("a", "A");
+    g.add("b", "B");
+    g.select("b", "battleship");
+    g.ready.add("a");
+    g.ready.add("b");
+    g.start("a");
+    const b = g.players.get("b")!;
+    b.status.protection = 0;
+    const shell = {
+      id: 1,
+      owner: "a",
+      kind: "HE" as const,
+      x: b.x - 10,
+      z: b.z,
+      y: 4,
+      vx: 120,
+      vy: -5,
+      vz: 0,
+      age: 1,
+      life: 5,
+      damage: 2300,
+      caliber: 203,
+      range: 1150,
+      distance: 300,
+      start: { x: b.x - 300, z: b.z },
+    };
+    const contact = (zone: "side" | "superstructure", armor: number) => ({
+      t: 0.5,
+      point: { x: b.x - 7, z: b.z },
+      y: 4,
+      normal: new Vector3(-1, 0, 0),
+      zone,
+      armor,
+    });
+    const impact = (
+      g as unknown as {
+        impact: (
+          p: typeof shell,
+          t: typeof b,
+          c: ReturnType<typeof contact>,
+        ) => void;
+      }
+    ).impact.bind(g);
+    impact(shell, b, contact("side", 260));
+    expect(b.status.fire).toEqual([0, 0]);
+    impact(shell, b, contact("superstructure", 19));
+    expect(b.status.fire.some((f) => f > 0)).toBe(true);
+  });
   it("distinguishes broadside citadel, angled ricochet, HE shatter and overpenetration", () => {
     const s = makeShip("b", "B", "cruiser");
     expect(
