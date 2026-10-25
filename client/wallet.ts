@@ -107,6 +107,9 @@ export const renameAccount = (name: string) =>
     (r) => r.account,
   );
 export const logout = () => api("DELETE", "/api/auth/session");
+/** The signed-in captain's CGC, read from the chain by the game server. */
+export const fetchBalance = () =>
+  api<{ balance: string | null; error?: string }>("GET", "/api/me/balance");
 
 type Challenge = { challengeId: string; message: string; address: string };
 

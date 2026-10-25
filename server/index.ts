@@ -10,17 +10,20 @@ import { AccountStore, type Account } from "./accounts";
 import { WalletAuth } from "./walletAuth";
 import { MetanomicClient, metanomicConfig } from "./metanomic";
 import { RewardQueue } from "./rewardQueue";
-import { AutoRewards } from "./autoRewards";
+import { CgcBalance } from "./cgcBalance";
+import { AutoRewards, type MatchRewardRow } from "./autoRewards";
 import { AdminSetup, createAdminRoutes } from "./adminRoutes";
 import {
   cleanName,
   createAuthRoutes,
   readCookie,
   SESSION_COOKIE,
+  type BalanceView,
 } from "./authRoutes";
 import { RULES, HULLS, UPGRADE_KEYS } from "../shared/config";
 import type {
   ClientMessage,
+  RewardNotice,
   Hull,
   ServerMessage,
   Upgrade,
@@ -40,7 +43,6 @@ const accounts = new AccountStore(
 // Chain named in the sign-in message; Ronin Saigon testnet unless configured.
 const chainId = Number(process.env.GAME_CHAIN_ID ?? 2021);
 const walletAuth = new WalletAuth(accounts, chainId);
-const authRoutes = createAuthRoutes(accounts, walletAuth);
 // CGC rewards are paid only when the Metanomic game credentials are configured.
 const metanomicSettings = metanomicConfig();
 const metanomic = metanomicSettings
@@ -48,6 +50,23 @@ const metanomic = metanomicSettings
   : null;
 const rewardQueue = new RewardQueue(accounts.db, metanomic);
 const autoRewards = new AutoRewards(accounts, rewardQueue, metanomic);
+const cgc = metanomicSettings
+  ? new CgcBalance(metanomicSettings.apiUrl, metanomicSettings.assetId)
+  : null;
+/** The captain's CGC as soon as a transfer is in a block. */
+async function balanceOf(account: Account): Promise<BalanceView> {
+  if (!cgc) return { balance: null, error: "Metanomic이 설정되지 않았습니다." };
+  try {
+    return { balance: (await cgc.balance(account.wallet)).amount };
+  } catch (error) {
+    console.error(
+      "CGC 잔액 조회 실패:",
+      error instanceof Error ? error.message : error,
+    );
+    return { balance: null, error: "잔액을 읽지 못했습니다." };
+  }
+}
+const authRoutes = createAuthRoutes(accounts, walletAuth, balanceOf);
 const adminSetup = new AdminSetup(accounts);
 const adminRoutes = createAdminRoutes(
   accounts,
@@ -99,7 +118,45 @@ function recordResults(g: Game) {
     });
   });
   // Failures are logged inside settle(); the match itself is already saved.
-  void autoRewards.settle(match).catch(() => {});
+  void autoRewards
+    .settle(match)
+    .then((rows) => notifyRewards(g, match.id, rows))
+    .catch(() => {});
+}
+/** Tells each signed-in captain of `g` what this match paid them. */
+function notifyRewards(
+  g: Game,
+  matchId: number,
+  rows: MatchRewardRow[] | null,
+) {
+  const skipped = rows?.find((r) => r.accountId === "*");
+  for (const [playerId, accountId] of g.accounts) {
+    const session = [...sessions.values()].find(
+      (s) => s.id === playerId && s.room === g.code,
+    );
+    if (!session?.ws) continue;
+    const row = rows?.find((r) => r.accountId === accountId);
+    const notice: RewardNotice = !rows
+      ? { type: "reward", matchId, status: "OFF", amount: "0", items: [] }
+      : row
+        ? {
+            type: "reward",
+            matchId,
+            status: row.status,
+            amount: row.amount,
+            items: row.items,
+            note: row.note ?? undefined,
+          }
+        : {
+            type: "reward",
+            matchId,
+            status: "SKIPPED",
+            amount: "0",
+            items: [],
+            note: skipped?.note ?? "지급 대상이 아닙니다.",
+          };
+    send(session.ws, notice);
+  }
 }
 type Session = {
   id: string;
@@ -161,6 +218,31 @@ const server = http.createServer(async (req, res) => {
     res.end(
       JSON.stringify({ ok: true, rooms: rooms.size, players: sessions.size }),
     );
+    return;
+  }
+  if (req.method === "GET" && req.url === "/api/rewards/outlook") {
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(JSON.stringify({ outlook: await autoRewards.outlook() }));
+    return;
+  }
+  if (req.method === "GET" && req.url === "/api/rooms") {
+    // Battles with a captain still connected, joinable ones first.
+    const list = [...rooms.values()]
+      .filter(
+        (g) =>
+          g.listed &&
+          [...g.players.values()].some((s) => !s.bot && s.connected),
+      )
+      .map((g) => g.summary())
+      .sort(
+        (a, b) =>
+          Number(b.joinable) - Number(a.joinable) || b.humans - a.humans,
+      )
+      .slice(0, 50);
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(JSON.stringify({ rooms: list }));
     return;
   }
   if (await adminRoutes(req, res)) return;
@@ -349,12 +431,13 @@ wss.on("connection", (ws, req) => {
       }
       if (m.type === "create" || m.type === "join") {
         if (current) {
-          fail(ws, "이미 함대에 참가했습니다.");
+          fail(ws, "이미 전장에 참가했습니다.");
           return;
         }
         let g: Game;
         if (m.type === "create") {
-          if (rooms.size >= 100) throw Error("현재 함대가 가득 찼습니다.");
+          if (rooms.size >= 100)
+            throw Error("열린 전장이 너무 많습니다. 잠시 후 다시 시도하세요.");
           let code;
           do {
             code = randomBytes(3).toString("hex").toUpperCase();
@@ -364,7 +447,7 @@ wss.on("connection", (ws, req) => {
         } else {
           const code = String(m.room).trim().toUpperCase();
           const found = rooms.get(code);
-          if (!found) throw Error("함대 코드를 찾을 수 없습니다.");
+          if (!found) throw Error("전장 코드를 찾을 수 없습니다.");
           g = found;
         }
         const id = randomBytes(6).toString("hex"),
@@ -391,7 +474,7 @@ wss.on("connection", (ws, req) => {
         return;
       }
       if (!current) {
-        fail(ws, "먼저 함대에 참가해 주세요.");
+        fail(ws, "먼저 전장에 참가해 주세요.");
         return;
       }
       const g = rooms.get(current.room),
@@ -407,8 +490,21 @@ wss.on("connection", (ws, req) => {
           );
           broadcast(g);
           break;
+        case "fillBots":
+          g.fillTeams(
+            s.id,
+            m.hull,
+            m.model ?? "camouflage",
+            (m.skill ?? 5) as BotSkill,
+          );
+          broadcast(g);
+          break;
         case "mode":
           g.setMode(s.id, m.mode);
+          broadcast(g);
+          break;
+        case "listed":
+          g.setListed(s.id, m.listed);
           broadcast(g);
           break;
         case "team":

@@ -48,7 +48,15 @@ async function peer() {
 }
 beforeAll(async () => {
   server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
-    env: { ...process.env, PORT: "3108", E2E_SECRET: "" },
+    // Isolated: in-memory accounts, and never the real Metanomic network.
+    env: {
+      ...process.env,
+      PORT: "3108",
+      E2E_SECRET: "",
+      ACCOUNT_DB: ":memory:",
+      METANOMIC_API_URL: "",
+      METANOMIC_GAME_KEY: "",
+    },
     stdio: "ignore",
   });
   for (let n = 0; n < 100; n++) {
@@ -114,6 +122,46 @@ describe("real WebSocket authority and session lifecycle", () => {
       await c.close();
     }
   });
+  it("lists open battles, hides unlisted ones and lets a captain join from the list", async () => {
+    const a = await peer(),
+      b = await peer();
+    const listed = async () =>
+      (
+        (await (await fetch("http://127.0.0.1:3108/api/rooms")).json()) as {
+          rooms: {
+            code: string;
+            hostName: string;
+            joinable: boolean;
+            ships: number;
+          }[];
+        }
+      ).rooms;
+    try {
+      a.send({ type: "create", name: "목록 함장" });
+      const { room } = await a.wait("welcome");
+      expect((await listed()).find((r) => r.code === room)).toMatchObject({
+        hostName: "목록 함장",
+        joinable: true,
+        ships: 1,
+      });
+      a.send({ type: "listed", listed: false });
+      await a.wait("lobby", (m) => !m.listed);
+      expect((await listed()).some((r) => r.code === room)).toBe(false);
+      // The code still works for invited captains.
+      b.send({ type: "join", room, name: "초대 함장" });
+      await b.wait("welcome");
+      b.send({ type: "listed", listed: true });
+      expect(
+        (await b.wait("error", (m) => m.message.includes("공개"))).message,
+      ).toContain("함대장");
+      a.send({ type: "listed", listed: true });
+      await a.wait("lobby", (m) => m.listed);
+      expect((await listed()).find((r) => r.code === room)?.ships).toBe(2);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
   it("deletes an NPC-only room when the last human explicitly leaves", async () => {
     const a = await peer(),
       b = await peer();
@@ -155,7 +203,7 @@ describe("real WebSocket authority and session lifecycle", () => {
       expect(snap.self.hull).toBe("destroyer");
       expect(snap.phase).toBe("battle");
       late.send({ type: "join", room: first.room, name: "Late" });
-      expect((await late.wait("error")).message).toContain("이미 출항");
+      expect((await late.wait("error")).message).toContain("이미 시작한 전장");
       await a.close();
       await b.wait("lobby", (m) => m.host === second.id);
       resumed = await peer();

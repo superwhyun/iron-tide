@@ -139,23 +139,35 @@ describe("navigation and weapon authority", () => {
     expect(g.fire("a", true)).toBe(false);
     expect(g.projectiles.length).toBe(n);
   });
-  it("switching shells takes a per-shell share of the reload, returning from torpedoes preserves the loaded shell", () => {
+  it("switching shells adds no wait: rammed rounds fire as loaded, the next load is the new shell", () => {
     const { g, a } = battle();
-    // Cruiser reload 7 s: AP 60 %, SAP 50 %, HE 40 %.
+    a.turrets[1].reload = 3; // turret 2 is mid-load
     g.setInput("a", { ...a.input, weapon: "AP" });
-    expect(a.turrets[0].reload).toBeCloseTo(4.2);
-    tick(g, 2);
+    expect(a.turrets.map((t) => t.reload)).toEqual([
+      0,
+      3,
+      ...a.turrets.slice(2).map(() => 0),
+    ]);
+    expect(a.turrets[0].ammo).toBe("HE");
+    expect(a.turrets[1].ammo).toBe("AP");
+    // Turret 1 still fires the HE round in its breech, then loads AP.
+    a.input.aim = {
+      x: a.x + Math.sin(a.heading) * 600,
+      z: a.z + Math.cos(a.heading) * 600,
+    };
+    tick(g, 3);
+    const before = g.projectiles.length;
+    expect(g.fire("a")).toBe(true);
+    const fired = g.projectiles.slice(before);
+    expect(fired.length).toBeGreaterThan(0);
+    expect(fired.every((p) => p.kind === "HE")).toBe(true);
+    expect(a.turrets.find((t) => t.reload > 0 && t.reload > 6)?.ammo).toBe(
+      "AP",
+    );
+    // Torpedoes in between do not forget the selected shell.
     g.setInput("a", { ...a.input, weapon: "TORP" });
     g.setInput("a", { ...a.input, weapon: "AP" });
-    expect(a.turrets[0].reload).toBeCloseTo(2.2);
-    tick(g, 3);
-    g.setInput("a", { ...a.input, weapon: "HE" });
-    expect(a.turrets[0].reload).toBeCloseTo(2.8);
-    // A turret that is further from ready keeps its own longer timer.
-    a.turrets[0].reload = 6;
-    g.setInput("a", { ...a.input, weapon: "SAP" });
-    expect(a.turrets[0].reload).toBe(6);
-    expect(a.turrets[1].reload).toBeCloseTo(3.5);
+    expect(a.turrets.some((t) => t.reload > 6 && t.ammo === "AP")).toBe(true);
   });
   it("main battery shells actually traverse the sea and hit a target", () => {
     const { g, a, b } = battle();

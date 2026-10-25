@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Game } from "../server/game";
+import { planTeamFill } from "../server/teamFill";
 import { RULES, TEAM_MATCH, ISLANDS } from "../shared/config";
 import { dist } from "../shared/math";
 
@@ -25,7 +26,7 @@ describe("team match", () => {
   it("balances joins across both fleets and caps each at four", () => {
     const g = new Game("BAL", 480);
     for (let i = 0; i < RULES.maxPlayers; i++) g.add(`p${i}`, `P${i}`);
-    expect(() => g.add("p8", "P8")).toThrow(`정원은 ${RULES.maxPlayers}명`);
+    expect(() => g.add("p8", "P8")).toThrow(`정원은 ${RULES.maxPlayers}척`);
     const sizes = [0, 0];
     for (const id of g.players.keys()) sizes[g.teamOf(id)!]++;
     expect(sizes).toEqual([TEAM_MATCH.size, TEAM_MATCH.size]);
@@ -201,5 +202,76 @@ describe("ship contact", () => {
       g.step(1 / RULES.tick);
     }
     expect(a.speed).toBeLessThan(-1);
+  });
+});
+
+describe("filling both fleets with NPCs", () => {
+  const sorted = (h: string[]) => [...h].sort();
+  it("mirrors the fleets ship for ship with a mix of hull types", () => {
+    // Red: a cruiser captain. Blue: empty. Battleship selected.
+    const [red, blue] = planTeamFill(["cruiser"], [], [3, 4], "battleship");
+    expect(sorted(["cruiser", ...red])).toEqual(sorted(blue));
+    // One of each, with the chosen battleship taking the fourth seat.
+    expect(sorted(blue)).toEqual(
+      sorted(["battleship", "battleship", "cruiser", "destroyer"]),
+    );
+  });
+  it("never fills an empty lobby with a single hull type", () => {
+    const [red, blue] = planTeamFill([], [], [4, 4], "battleship");
+    expect(sorted(red)).toEqual(sorted(blue));
+    expect(new Set(red).size).toBe(3);
+  });
+  it("copies what the other side already has", () => {
+    const [red, blue] = planTeamFill(
+      ["battleship", "battleship", "destroyer"],
+      ["cruiser"],
+      [1, 3],
+      "cruiser",
+    );
+    expect(sorted(["battleship", "battleship", "destroyer", ...red])).toEqual(
+      sorted(["cruiser", ...blue]),
+    );
+  });
+  it("gives the weaker side bigger ships when an identical fleet is impossible", () => {
+    // Red has two battleships; blue already has three destroyers.
+    const [red, blue] = planTeamFill(
+      ["battleship", "battleship"],
+      ["destroyer", "destroyer", "destroyer"],
+      [2, 1],
+      "cruiser",
+    );
+    expect(red).toEqual(["destroyer", "destroyer"]);
+    expect(blue).toEqual(["battleship"]);
+  });
+  it("fills a team lobby to 4 vs 4 with matching NPC fleets", () => {
+    const g = new Game("FILL", 480);
+    g.add("host", "H");
+    g.add("guest", "G");
+    g.select("guest", "battleship");
+    g.setMode("host", "team");
+    expect(() => g.fillTeams("guest", "cruiser", "camouflage", 3)).toThrow(
+      "함대장",
+    );
+    const added = g.fillTeams("host", "destroyer", "camouflage", 3);
+    expect(added).toHaveLength(6);
+    expect(g.players.size).toBe(8);
+    const fleet = (t: 0 | 1) =>
+      sorted(
+        [...g.players.values()]
+          .filter((s) => g.teamOf(s.id) === t)
+          .map((s) => s.hull),
+      );
+    expect(fleet(0)).toEqual(fleet(1));
+    expect(fleet(0)).toHaveLength(4);
+    expect(
+      g
+        .lobby()
+        .players.filter((p) => p.bot)
+        .every((p) => p.ready),
+    ).toBe(true);
+    expect(g.lobby().players.find((p) => p.bot)?.skill).toBe(3);
+    expect(() => g.fillTeams("host", "cruiser", "camouflage", 3)).toThrow(
+      "빈자리",
+    );
   });
 });

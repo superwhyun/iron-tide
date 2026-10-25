@@ -34,6 +34,19 @@ test("browser armor and spotting: ricochet vs broadside damage, islands and sona
     await control(b);
     await b.keyboard.press("p");
     await b.keyboard.press("2");
+    // Rounds already rammed stay HE after a switch; this comparison is AP only.
+    await fixture(room, {
+      players: [
+        {
+          id: B,
+          turrets: (await state(b)).self.turrets.map((t) => ({
+            ...t,
+            ammo: "AP",
+            reload: 0,
+          })),
+        },
+      ],
+    });
     await aimAt(b, -60, -700);
     await expect
       .poll(async () => (await state(b)).self.turrets[0].reload, {

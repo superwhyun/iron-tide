@@ -248,7 +248,7 @@ function matchesPanel(o: Overview) {
   return `<section class="panel"><header><h2>최근 경기</h2><small>지갑 계정만 선택할 수 있습니다</small></header><div class="matches">${o.matches
     .map(
       (m) => `<article class="match">
-      <header><strong>${modeName(m.mode)}</strong><span>#${m.id} · 함대 ${esc(m.room)} · ${time(m.endedAt)}</span></header>
+      <header><strong>${modeName(m.mode)}</strong><span>#${m.id} · 전장 ${esc(m.room)} · ${time(m.endedAt)}</span></header>
       <ol>${m.entries
         .map(
           (e) =>

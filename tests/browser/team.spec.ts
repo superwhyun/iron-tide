@@ -14,14 +14,26 @@ test("team match: fleets in the lobby, ally labels, team score bar and fleet res
   await page.locator('[data-mode="team"]').click();
   await expect(page.locator(".team-group")).toHaveCount(2);
   await page.locator("#bot-hull").selectOption("cruiser");
-  for (let i = 0; i < 3; i++) await page.locator("#add-bot").click();
-  // Joins alternate between the fleets: 2 red, 2 blue.
-  await expect(
-    page.locator('.team-group[data-team="0"] .player-row'),
-  ).toHaveCount(2);
-  await expect(
-    page.locator('.team-group[data-team="1"] .player-row'),
-  ).toHaveCount(2);
+  // One press fills every free seat with ship-for-ship matching fleets.
+  await expect(page.locator("#add-bot")).toHaveText("NPC로 양 팀 채우기");
+  await page.locator("#add-bot").click();
+  const rows = (t: number) =>
+    page.locator(`.team-group[data-team="${t}"] .player-row`);
+  await expect(rows(0)).toHaveCount(4);
+  await expect(rows(1)).toHaveCount(4);
+  const hulls = async (t: number) =>
+    (await rows(t).locator("div > span").allInnerTexts())
+      .map((x) => x.split(" · ")[0])
+      .sort();
+  expect(await hulls(0)).toEqual(await hulls(1));
+  await expect(page.locator("#add-bot")).toBeDisabled();
+  await page.screenshot({ path: "artifacts/browser-team-fill.png" });
+  // Trim to 2 vs 2 for the switching checks below.
+  for (const t of [0, 1])
+    for (let n = 0; n < 2; n++)
+      await rows(t).locator("[data-remove-bot]").last().click();
+  await expect(rows(0)).toHaveCount(2);
+  await expect(rows(1)).toHaveCount(2);
 
   // Cross to blue, then send a blue NPC to red to even the sides again.
   await page.locator('[data-join-team="1"]').click();
@@ -96,6 +108,11 @@ test("team match: fleets in the lobby, ally labels, team score bar and fleet res
   await fixture(room, { advance: 481 });
   await expect(page.locator("#results")).toBeVisible();
   await expect(page.locator("#winner")).toContainText(/승리|무승부/);
+  // Guests are told how to earn CGC instead.
+  await expect(page.locator("#result-reward")).toHaveAttribute(
+    "data-state",
+    "guest",
+  );
   await expect(page.locator('.result-row[data-team="1"]')).toHaveCount(2);
   await page.screenshot({ path: "artifacts/browser-team-results.png" });
   expect(errors).toEqual([]);

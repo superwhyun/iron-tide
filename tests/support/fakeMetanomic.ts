@@ -15,6 +15,10 @@ export class FakeMetanomic {
   budgetExceeded = false;
   finalizeAfterPolls = 1;
   posts = 0;
+  /** CGC per wallet (lower-case) in micro-units; rewards land here at once. */
+  balances = new Map<string, bigint>();
+  static readonly contractAddress =
+    "0x8cb7b084470ab1d945586052a586b093fc1235d0";
   private server: http.Server;
   constructor(
     readonly key = "test-game-key",
@@ -40,6 +44,28 @@ export class FakeMetanomic {
   }
   private async handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (req.url === "/health") return this.send(res, 200, { ok: true });
+    // Public: token deployment, pointing its RPC at this same server.
+    if (req.method === "GET" && req.url === "/v1/assets") {
+      const host = `http://${req.headers.host}`;
+      return this.send(res, 200, {
+        assets: [
+          {
+            assetId: "common-game-credit",
+            decimals: 6,
+            activeDeploymentId: "test-chain",
+            deployments: [
+              {
+                id: "test-chain",
+                chainId: 31337,
+                rpcUrl: `${host}/rpc`,
+                token: FakeMetanomic.contractAddress,
+              },
+            ],
+          },
+        ],
+      });
+    }
+    if (req.method === "POST" && req.url === "/rpc") return this.rpc(req, res);
     if (req.headers.authorization !== `Bearer ${this.key}`)
       return this.error(res, 401, "UNAUTHENTICATED");
     const path = new URL(req.url ?? "/", "http://x").pathname;
@@ -74,6 +100,14 @@ export class FakeMetanomic {
       if (!existing) {
         this.rewards.set(key, record);
         this.operations.set(record.operationId, { polls: 0 });
+        const to = String(parsed.recipient).toLowerCase(),
+          [whole, fraction = ""] = String(parsed.amount).split(".");
+        this.balances.set(
+          to,
+          (this.balances.get(to) ?? 0n) +
+            BigInt(whole) * 1_000_000n +
+            BigInt(fraction.padEnd(6, "0")),
+        );
       }
       return this.send(res, 202, {
         rewardId: `rw-${key}`,
@@ -92,6 +126,33 @@ export class FakeMetanomic {
       });
     }
     this.error(res, 404, "NOT_FOUND");
+  }
+  /** Minimal JSON-RPC: `eth_call` answers ERC-20 `balanceOf` from `balances`. */
+  private async rpc(req: http.IncomingMessage, res: http.ServerResponse) {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const calls = [JSON.parse(body)].flat() as {
+      id: number;
+      method: string;
+      params: { to?: string; data?: string }[];
+    }[];
+    const answer = (c: (typeof calls)[number]) => {
+      if (c.method === "eth_chainId") return { result: "0x7a69" };
+      if (c.method === "eth_blockNumber") return { result: "0x1" };
+      const call = c.params?.[0];
+      if (
+        c.method === "eth_call" &&
+        call?.to?.toLowerCase() === FakeMetanomic.contractAddress &&
+        call.data?.startsWith("0x70a08231")
+      ) {
+        const wallet = `0x${call.data.slice(-40)}`.toLowerCase();
+        const value = this.balances.get(wallet) ?? 0n;
+        return { result: `0x${value.toString(16).padStart(64, "0")}` };
+      }
+      return { error: { code: -32601, message: "unsupported" } };
+    };
+    const out = calls.map((c) => ({ jsonrpc: "2.0", id: c.id, ...answer(c) }));
+    this.send(res, 200, Array.isArray(JSON.parse(body)) ? out : out[0]);
   }
 }
 

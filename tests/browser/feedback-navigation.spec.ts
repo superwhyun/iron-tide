@@ -126,8 +126,14 @@ test("coastal reverse hold, stable Shift aim, clear armor feedback, large damage
       .poll(async () => (await state(a)).self.input.weapon)
       .toBe("AP");
     await fixture(room, { advance: 13 });
+    // Rounds already rammed stay HE after a switch; this salvo must be AP.
+    const loaded = (await state(a)).self.turrets;
     await fixture(room, {
       players: [
+        {
+          id: A,
+          turrets: loaded.map((t) => ({ ...t, ammo: "AP", reload: 0 })),
+        },
         {
           id: B,
           x: 250,

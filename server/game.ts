@@ -9,7 +9,6 @@ import {
   mainCaliber,
   NPC_MODELS,
   TEAM_MATCH,
-  SHELL_SWITCH,
 } from "../shared/config";
 import {
   angleDiff,
@@ -41,7 +40,10 @@ import type {
   Zone,
   BuffKind,
   Team,
+  Shell,
+  RoomSummary,
 } from "../shared/types";
+import { isShellAmmo } from "../shared/types";
 import { islandBlocksLine, terrainHeight } from "../shared/terrain";
 import { moveAlongShore, nearShore } from "../shared/navigation";
 import { armorOutcome } from "../shared/armor";
@@ -51,6 +53,7 @@ const GROUNDED_PIVOT = 0.7;
 /** Citadel hits deal this share of the shell's damage (a full share deleted cruisers in two salvos). */
 const CITADEL_SHARE = 0.6;
 import { BotCaptain, isBotSkill, type BotSkill } from "./bots";
+import { planTeamFill } from "./teamFill";
 import { breakModule, repairModules, tickModules } from "./modules";
 import { createZones, DOMINATION, updateZones } from "./objectives";
 import { intersectShip, type ShipHit } from "./shipCollision";
@@ -105,6 +108,7 @@ export function makeShip(
       offset,
       angle: offset >= 0 ? 0 : Math.PI,
       reload: 0,
+      ammo: "HE" as const,
     })),
     torpedoReload: 0,
     mineReload: 0,
@@ -330,6 +334,8 @@ export class Game {
   mode: GameMode = "deathmatch";
   /** Player id → wallet account id, for players who signed in. */
   accounts = new Map<string, string>();
+  /** Shown in the harbor's public battle list; the host can hide it. */
+  listed = true;
   /** Player id → fleet. Kept in every mode so a switch to team play is instant. */
   teams = new Map<string, Team>();
   zones: Zone[] = [];
@@ -364,9 +370,9 @@ export class Game {
   }
   add(id: string, name: string, account?: string) {
     if (this.phase !== "lobby")
-      throw Error("이미 출항한 함대입니다. 다음 경기에 참가해 주세요.");
+      throw Error("이미 시작한 전장입니다. 다음 경기에 참가해 주세요.");
     if (this.players.size >= RULES.maxPlayers)
-      throw Error(`함대 정원은 ${RULES.maxPlayers}명입니다.`);
+      throw Error(`전장 정원은 ${RULES.maxPlayers}척입니다.`);
     const s = makeShip(id, name);
     this.players.set(id, s);
     this.teams.set(id, this.smallerTeam());
@@ -404,6 +410,42 @@ export class Game {
     this.captains.set(id, new BotCaptain(id, number, skill));
     return id;
   }
+  /**
+   * Team match: fill every free seat with NPCs so both fleets match ship for
+   * ship (bigger ships make up the difference when they cannot). Returns the
+   * new NPC ids.
+   */
+  fillTeams(host: string, preferred: Hull, model: NpcModel, skill: BotSkill) {
+    if (host !== this.host) throw Error("함대장만 NPC를 추가할 수 있습니다.");
+    if (this.mode !== "team")
+      throw Error("팀전에서만 양 팀을 채울 수 있습니다.");
+    if (this.phase !== "lobby")
+      throw Error("출항 전에만 NPC를 추가할 수 있습니다.");
+    if (!Object.hasOwn(HULLS, preferred)) throw Error("잘못된 함종입니다.");
+    const fleet = (t: Team) =>
+      this.teamMembers(t).map((id) => this.players.get(id)!.hull);
+    const seats: [number, number] = [
+      TEAM_MATCH.size - fleet(0).length,
+      TEAM_MATCH.size - fleet(1).length,
+    ];
+    if (seats[0] + seats[1] <= 0) throw Error("양 팀에 빈자리가 없습니다.");
+    const plan = planTeamFill(fleet(0), fleet(1), seats, preferred);
+    const added: string[] = [];
+    plan.forEach((hulls, team) => {
+      for (const hull of hulls) {
+        // Wisconsin Golden is a battleship model; other hulls keep the camouflage one.
+        const id = this.addBot(
+          host,
+          hull,
+          hull === "battleship" ? model : "camouflage",
+          skill,
+        );
+        this.teams.set(id, team as Team);
+        added.push(id);
+      }
+    });
+    return added;
+  }
   setMode(host: string, mode: GameMode) {
     if (host !== this.host)
       throw Error("함대장만 경기 방식을 바꿀 수 있습니다.");
@@ -412,6 +454,26 @@ export class Game {
     if (mode !== "deathmatch" && mode !== "domination" && mode !== "team")
       throw Error("알 수 없는 경기 방식입니다.");
     this.mode = mode;
+  }
+  setListed(host: string, listed: boolean) {
+    if (host !== this.host)
+      throw Error("함대장만 전장 공개 여부를 바꿀 수 있습니다.");
+    this.listed = listed === true;
+  }
+  /** Public listing: open while in the lobby with a free seat. */
+  summary(): RoomSummary {
+    const ships = [...this.players.values()];
+    return {
+      code: this.code,
+      mode: this.mode,
+      phase: this.phase,
+      hostName: this.players.get(this.host)?.name ?? "",
+      ships: ships.length,
+      humans: ships.filter((s) => !s.bot).length,
+      max: RULES.maxPlayers,
+      remaining: Math.ceil(this.remaining),
+      joinable: this.phase === "lobby" && ships.length < RULES.maxPlayers,
+    };
   }
   /** Moves yourself, or (host only) an NPC, to `team` while in the lobby. */
   setTeam(requester: string, id: string, team: Team) {
@@ -621,6 +683,7 @@ export class Game {
       offset,
       angle: s.heading + (offset < 0 ? Math.PI : 0),
       reload: 0,
+      ammo: "HE" as const,
     }));
     s.torpedoReload = 0;
     s.mineReload = 0;
@@ -666,14 +729,11 @@ export class Game {
       input.weapon === "TORP" && !HULLS[s.hull].torpedo
         ? s.input.weapon
         : input.weapon;
-    // Remember the loaded shell while switching between guns and tubes.
-    const previous = this.loadedAmmo.get(id) ?? "HE";
-    if (
-      (weapon === "HE" || weapon === "AP" || weapon === "SAP") &&
-      weapon !== previous
-    ) {
-      const swap = gunReload(s) * SHELL_SWITCH[weapon];
-      for (const t of s.turrets) t.reload = Math.max(t.reload, swap);
+    // A new shell type costs no extra wait: a round already rammed is fired
+    // as it is, and every load from now on (including one in progress) is
+    // the new type.
+    if (isShellAmmo(weapon) && weapon !== this.loadedAmmo.get(id)) {
+      for (const t of s.turrets) if (t.reload > 0) t.ammo = weapon;
       this.loadedAmmo.set(id, weapon);
     }
     const target =
@@ -698,7 +758,8 @@ export class Game {
     // A quick click can begin and end between simulation ticks; do not drop it.
     if (s.input.firing && !wasFiring) this.fire(id);
   }
-  private loadedAmmo = new Map<string, Ammo>();
+  /** Shell type each captain has selected: what the turrets load next. */
+  private loadedAmmo = new Map<string, Shell>();
   private nextHeldFire = new Map<string, number>();
   upgrade(id: string, key: Upgrade) {
     const s = this.players.get(id);
@@ -788,9 +849,12 @@ export class Game {
     if (!available.length) return false;
     const list = salvo ? available : available.slice(0, 1),
       c = HULLS[s.hull];
-    for (const i of list) {
+    const next = this.loadedAmmo.get(id) ?? "HE";
+    const kinds = list.map((i) => s.turrets[i].ammo ?? next);
+    for (const [k, i] of list.entries()) {
       const t = s.turrets[i];
       t.reload = gunReload(s);
+      t.ammo = next;
       const origin = {
         x: s.x + Math.sin(s.heading) * t.offset,
         z: s.z + Math.cos(s.heading) * t.offset,
@@ -800,7 +864,7 @@ export class Game {
           s,
           origin,
           s.input.aim,
-          s.input.weapon,
+          kinds[k],
           c.shellDamage * (1 - 0.08 * s.upgrades.salvo) * damageBoost(s),
           mainCaliber(s),
           c.shellSpeed,
@@ -816,7 +880,7 @@ export class Game {
       x: s.x,
       z: s.z,
       owner: id,
-      text: s.input.weapon,
+      text: kinds[0],
       caliber: mainCaliber(s),
       turrets: list,
       elevation: Math.atan2(
@@ -1467,6 +1531,7 @@ export class Game {
       })),
       duration: this.duration,
       mode: this.mode,
+      listed: this.listed,
     };
   }
   snapshot(id: string): Snapshot {

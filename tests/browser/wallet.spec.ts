@@ -45,13 +45,26 @@ test("wallet sign-in names the captain, survives reload and records the match", 
     );
   }, wallet.address);
 
+  // The game budget is reported as short: captains are told before playing.
+  await page.route("**/api/rewards/outlook", (route) =>
+    route.fulfill({ json: { outlook: "LOW_BUDGET" } }),
+  );
   await page.goto("/");
   await expect(page.locator("#wallet-login")).toBeVisible();
+  await expect(
+    page.locator('.reward-outlook[data-place="harbor"]'),
+  ).toBeHidden();
   await page.locator("#wallet-login").click();
   await expect(page.locator(".account-row strong")).toHaveText(
     `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`,
   );
   await expect(page.locator(".account-stats")).toContainText("0전 0승");
+  await expect(
+    page.locator('.reward-outlook[data-place="harbor"]'),
+  ).toContainText("게임 예산 부족");
+  // CGC held by the wallet, read from the (fake) token contract.
+  await expect(page.locator("#cgc-balance")).toBeVisible();
+  await expect(page.locator("#cgc-balance strong")).toHaveText("0");
   // The session is an HttpOnly cookie: scripts cannot read it.
   expect(await page.evaluate(() => document.cookie)).not.toContain(
     "it_session",
@@ -65,6 +78,9 @@ test("wallet sign-in names the captain, survives reload and records the match", 
   const room = await page.locator("#lobby-code").innerText();
   await expect(page.locator(".player-row").first()).toContainText("지갑 함장");
   await expect(page.locator(".player-row small.verified")).toHaveCount(1);
+  await expect(
+    page.locator('.reward-outlook[data-place="lobby"]'),
+  ).toContainText("경기는 정상적으로 할 수 있습니다");
   await page.screenshot({ path: "artifacts/browser-wallet-lobby.png" });
 
   await page.locator("#add-bot").click();
@@ -82,8 +98,22 @@ test("wallet sign-in names the captain, survives reload and records the match", 
   });
   expect(res.ok).toBe(true);
   await expect(page.locator("#results")).toBeVisible();
+  // The server reports this match's CGC right on the results card.
+  await expect(page.locator("#result-reward")).toHaveAttribute(
+    "data-state",
+    "queued",
+  );
+  await expect(page.locator("#result-reward")).toContainText("참가");
+  await expect(
+    page.locator("#result-reward .reward-head strong"),
+  ).toContainText(/^\+[\d.]+ CGC$/);
+  await page.screenshot({ path: "artifacts/browser-match-reward.png" });
   await page.locator("#result-leave").click();
   await expect(page.locator(".account-stats")).toContainText("1전");
+  // The automatic match reward shows up in the header once it is on chain.
+  await expect(page.locator("#cgc-balance strong")).not.toHaveText("0", {
+    timeout: 30000,
+  });
   await expect(page.locator("#captain-name")).toHaveValue("지갑 함장");
   await page.screenshot({ path: "artifacts/browser-wallet-account.png" });
 

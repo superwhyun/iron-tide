@@ -1,6 +1,10 @@
 export type Hull = "destroyer" | "cruiser" | "battleship";
 export type NpcModel = "camouflage" | "wisconsin-golden";
 export type Ammo = "HE" | "AP" | "SAP" | "TORP" | "MINE" | "RBU";
+/** Main-battery shells. */
+export type Shell = "HE" | "AP" | "SAP";
+export const isShellAmmo = (a: Ammo): a is Shell =>
+  a === "HE" || a === "AP" || a === "SAP";
 export type Upgrade =
   | "range"
   | "salvo"
@@ -94,6 +98,8 @@ export interface Ship {
     reload: number;
     offset: number;
     disabled?: number;
+    /** Shell already rammed (or being loaded) in this turret. */
+    ammo?: Shell;
   }[];
   torpedoReload: number;
   mineReload: number;
@@ -279,6 +285,21 @@ export interface Lobby {
   players: Score[];
   duration: number;
   mode: GameMode;
+  /** Shown in the public battle list (host can hide it). */
+  listed: boolean;
+}
+/** One open battle in the harbor's public list. */
+export interface RoomSummary {
+  code: string;
+  mode: GameMode;
+  phase: Phase;
+  hostName: string;
+  ships: number;
+  humans: number;
+  max: number;
+  /** Seconds left while a battle is running. */
+  remaining: number;
+  joinable: boolean;
 }
 export type ClientMessage =
   | { type: "create"; name: string }
@@ -289,8 +310,10 @@ export type ClientMessage =
   | { type: "start" }
   | { type: "addBot"; hull: Hull; model?: NpcModel; skill?: number }
   | { type: "removeBot"; id: string }
+  | { type: "fillBots"; hull: Hull; model?: NpcModel; skill?: number }
   | { type: "mode"; mode: GameMode }
   | { type: "team"; team: Team; id?: string }
+  | { type: "listed"; listed: boolean }
   | { type: "input"; input: Input }
   | { type: "salvo" }
   | { type: "ability"; ability: "dcp" | "special" }
@@ -299,9 +322,23 @@ export type ClientMessage =
   | { type: "rematch" }
   | { type: "leave" }
   | { type: "ping"; at: number };
+/**
+ * The signed-in captain's CGC for the match that just ended. QUEUED is on its
+ * way to the wallet, HELD waits for budget, SKIPPED pays nothing (see note),
+ * OFF means automatic rewards are switched off.
+ */
+export interface RewardNotice {
+  type: "reward";
+  matchId: number;
+  status: "QUEUED" | "HELD" | "SKIPPED" | "OFF";
+  amount: string;
+  items: { label: string; amount: string }[];
+  note?: string;
+}
 export type ServerMessage =
   | Lobby
   | Snapshot
+  | RewardNotice
   | { type: "welcome"; id: string; token: string; room: string }
   | { type: "error"; message: string }
   | { type: "pong"; at: number }

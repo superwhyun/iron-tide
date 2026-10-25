@@ -316,6 +316,22 @@ describe("automatic match rewards", () => {
     expect(auto.heldCount()).toBe(0);
     expect(queue.list()).toHaveLength(2);
   });
+  it("warns before a match when the budget cannot cover one captain's maximum", async () => {
+    expect(await auto.outlook()).toBe("OK");
+    // Rewards saved but not yet sent are already spoken for.
+    queue.enqueueFixed(
+      "hold",
+      { id: "a", wallet: wallets.a, name: "a" },
+      micro("990"),
+      "",
+      1,
+    );
+    expect(await auto.outlook()).toBe("OK"); // cached for 30 s
+    auto.refreshOutlook();
+    expect(await auto.outlook()).toBe("LOW_BUDGET");
+    auto.saveRules({ ...DEFAULT_RULES, enabled: false });
+    expect(await auto.outlook()).toBe("OFF");
+  });
   it("records why a whole match was skipped", async () => {
     const m = saved([entry(1, "a"), entry(2, null)]);
     store.db.prepare("UPDATE matches SET duration=10 WHERE id=?").run(m.id);

@@ -6,6 +6,7 @@ import {
   computeMatchRewards,
   DEFAULT_RULES,
   fitDailyCaps,
+  micro,
   normalizeRules,
   type RewardItem,
   type RewardRules,
@@ -16,6 +17,13 @@ export const RULE_PREFIX = "iron-tide:match:";
 /** Whole-match row (skipped matches) uses this account id. */
 const MATCH_ROW = "*";
 
+/**
+ * What captains are told before a match: OK pays, LOW_BUDGET means the game
+ * budget cannot cover one captain's maximum for a match, OFF means automatic
+ * rewards are switched off, UNKNOWN when the budget cannot be read.
+ */
+export type RewardOutlook = "OK" | "LOW_BUDGET" | "OFF" | "UNKNOWN";
+const OUTLOOK_TTL_MS = 30_000;
 /** QUEUED: handed to the reward queue. HELD: budget short, admin releases. */
 export type MatchRewardStatus = "QUEUED" | "HELD" | "SKIPPED";
 export interface MatchRewardRow {
@@ -43,6 +51,8 @@ export function startOfDay(now = Date.now()) {
  */
 export class AutoRewards {
   private chain: Promise<unknown> = Promise.resolve();
+  private outlookCache: { at: number; value: Promise<RewardOutlook> } | null =
+    null;
   constructor(
     private store: AccountStore,
     private queue: RewardQueue,
@@ -77,10 +87,14 @@ export class AutoRewards {
   saveRules(input: unknown) {
     const rules = normalizeRules(input);
     this.store.putSetting(RULES_KEY, JSON.stringify(rules));
+    this.refreshOutlook();
     return rules;
   }
-  /** Queues `match` behind any match still being processed. */
-  settle(match: MatchSummary) {
+  /**
+   * Queues `match` behind any match still being processed. Resolves to the
+   * match's reward rows, or null while automatic rewards are off.
+   */
+  settle(match: MatchSummary): Promise<MatchRewardRow[] | null> {
     const run = this.chain.then(() => this.process(match));
     this.chain = run.catch((error) =>
       console.error(`경기 #${match.id} 보상 처리 실패:`, error),
@@ -111,13 +125,13 @@ export class AutoRewards {
         Date.now(),
       );
   }
-  private async process(match: MatchSummary) {
+  private async process(match: MatchSummary): Promise<MatchRewardRow[] | null> {
     const rules = this.rules();
-    if (!rules.enabled) return;
+    if (!rules.enabled) return null;
     const result = computeMatchRewards(match, rules);
     if (result.skipped) {
       this.save(match.id, MATCH_ROW, "", 0n, 0n, [], "SKIPPED", result.skipped);
-      return;
+      return this.forMatch(match.id);
     }
     const { perAccount, total } = this.queue.committedSince(
       RULE_PREFIX,
@@ -188,6 +202,7 @@ export class AutoRewards {
         p.note,
       );
     }
+    return this.forMatch(match.id);
   }
   /**
    * Unknown budget (network error) does not block: the contract still refuses
@@ -201,6 +216,31 @@ export class AutoRewards {
       return (toMicro(available) ?? 0n) - this.queue.unsent() >= amount;
     } catch {
       return true;
+    }
+  }
+  /** Pre-match notice for captains, cached for 30 s. */
+  outlook(): Promise<RewardOutlook> {
+    if (this.outlookCache && Date.now() - this.outlookCache.at < OUTLOOK_TTL_MS)
+      return this.outlookCache.value;
+    const value = this.readOutlook();
+    this.outlookCache = { at: Date.now(), value };
+    return value;
+  }
+  /** Forget the cached outlook (rules saved, budget may have changed). */
+  refreshOutlook() {
+    this.outlookCache = null;
+  }
+  private async readOutlook(): Promise<RewardOutlook> {
+    const rules = this.rules();
+    if (!rules.enabled) return "OFF";
+    if (!this.metanomic) return "UNKNOWN";
+    try {
+      const { available } = await this.metanomic.budget();
+      if (available === undefined) return "UNKNOWN";
+      const left = (toMicro(available) ?? 0n) - this.queue.unsent();
+      return left < micro(rules.caps.perMatch) ? "LOW_BUDGET" : "OK";
+    } catch {
+      return "UNKNOWN";
     }
   }
   /** Releases a match's held rewards to the queue (admin decision). */

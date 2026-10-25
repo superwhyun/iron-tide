@@ -5,6 +5,7 @@ import { incomingSide, predictIncoming } from "./incoming";
 import { zoneColor } from "./zoneVisuals";
 import {
   fetchAccount,
+  fetchBalance,
   logout,
   signInWithWallet,
   WalletDiscovery,
@@ -25,7 +26,6 @@ import {
   xpRequired,
   respawnDelay,
   TEAM_MATCH,
-  SHELL_SWITCH,
 } from "../shared/config";
 import { angleDiff, bearing, clamp, dist, intercept } from "../shared/math";
 import { shoreRadius } from "../shared/terrain";
@@ -41,6 +41,8 @@ import type {
   Lobby,
   ModuleKind,
   PickupKind,
+  RewardNotice,
+  RoomSummary,
   Score,
   ServerMessage,
   Snapshot,
@@ -88,12 +90,13 @@ function compassTape() {
 }
 $("app").innerHTML = `
   <div id="sea"></div><div class="vignette"></div>
-  <section id="harbor" aria-label="함대 대기실">
-    <header class="harbor-header"><a class="brand" href="/">${emblem}<span>IRON TIDE<small>철의 해역</small></span></a><span class="header-coordinates">34° 28′ N &nbsp; 128° 41′ E <i></i> SOUTHERN ARCHIPELAGO</span><span class="header-actions"><a class="admin-link" href="/admin">관리자</a><button id="help" class="icon-button">조작 안내 <span>?</span></button></span></header>
+  <section id="harbor" aria-label="전장 대기실">
+    <header class="harbor-header"><a class="brand" href="/">${emblem}<span>IRON TIDE<small>철의 해역</small></span></a><span class="header-coordinates">34° 28′ N &nbsp; 128° 41′ E <i></i> SOUTHERN ARCHIPELAGO</span><span class="header-actions"><div id="cgc-balance" class="cgc-balance" hidden aria-live="polite"></div><a class="admin-link" href="/admin">관리자</a><button id="help" class="icon-button">조작 안내 <span>?</span></button></span></header>
     <div class="harbor-copy"><div class="eyebrow"><span class="tiny-line"></span> NAVAL COMBAT / ONLINE</div><h1>바다를 읽고,<br>전장을 지배하라<span>.</span></h1><p>묵직한 선회. 한 발의 판단.<br>당신의 함선으로 이 해역의 주인이 되세요.</p><div class="mode-chips"><span>최대 8척 · 개인전 · 팀전</span><span>8분 전술 해전</span><span>경기 중 함선 성장</span></div>
-      <div id="connect-form" class="connection-card"><div id="account-box" class="account-box" aria-live="polite"></div><label for="captain-name">함장 이름 <span>CALLSIGN</span></label><input id="captain-name" maxlength="18" placeholder="함장 이름을 입력하세요" value="함장" autocomplete="nickname"/><div class="connect-actions"><button id="create-room" class="primary">새 함대 창설 <span>↗</span></button><div class="join-row"><input id="room-code" maxlength="6" placeholder="함대 코드" aria-label="함대 코드"/><button id="join-room" class="outline">참가</button></div></div><small id="connection-note">계정 없이, 함대 코드를 공유해 친구와 출항하세요.</small></div>
-      <div id="lobby-panel" class="connection-card hidden"><div class="lobby-heading"><div><label>함대 코드 <span>INVITE YOUR FRIENDS</span></label><button id="copy-code" title="함대 코드 복사"><strong id="lobby-code"></strong><span>복사 ⧉</span></button></div><button id="leave-room" class="text-button">나가기</button></div><div class="mode-picker" role="radiogroup" aria-label="경기 방식"><button data-mode="deathmatch" role="radio"><strong>격침전</strong><small>많이 격침한 함장이 승리</small></button><button data-mode="domination" role="radio"><strong>거점전</strong><small>거점 4곳 점령 · 600점 선취</small></button><button data-mode="team" role="radio"><strong>팀전</strong><small>홍군 대 청군 · ${TEAM_MATCH.killLimit}격침 선취</small></button></div><div id="player-list"></div><div class="npc-controls"><select id="bot-hull" aria-label="NPC 함종"><option value="destroyer">NPC 구축함</option><option value="cruiser">NPC 순양함</option><option value="battleship" selected>NPC 위장 전함</option><option value="wisconsin-golden">NPC Wisconsin Golden</option></select><select id="bot-skill" aria-label="NPC 지능"><option value="1">지능 1 · 초보</option><option value="2">지능 2 · 미숙</option><option value="3" selected>지능 3 · 보통</option><option value="4">지능 4 · 숙련</option><option value="5">지능 5 · 정예</option></select><button id="add-bot" class="outline">+ NPC 추가</button></div><div class="lobby-actions"><button id="ready" class="outline">출항 준비</button><button id="start" class="primary">출항 <span>→</span></button></div><small id="lobby-note">친구가 참가할 때까지 기다려 주세요.</small></div>
+      <div id="connect-form" class="connection-card"><div id="account-box" class="account-box" aria-live="polite"></div><p class="reward-outlook" data-place="harbor" hidden role="status"></p><label for="captain-name">함장 이름 <span>CALLSIGN</span></label><input id="captain-name" maxlength="18" placeholder="함장 이름을 입력하세요" value="함장" autocomplete="nickname"/><div class="connect-actions"><button id="create-room" class="primary">새 전장 생성 <span>↗</span></button><div class="join-row"><input id="room-code" maxlength="6" placeholder="전장 코드" aria-label="전장 코드"/><button id="join-room" class="outline">참가</button></div></div><small id="connection-note">계정 없이, 전장 코드를 공유해 친구와 출항하세요.</small></div>
+      <div id="lobby-panel" class="connection-card hidden"><div class="lobby-heading"><div><label>전장 코드 <span>INVITE YOUR FRIENDS</span></label><button id="copy-code" title="전장 코드 복사"><strong id="lobby-code"></strong><span>복사 ⧉</span></button></div><button id="leave-room" class="text-button">나가기</button></div><label class="listed-toggle"><input type="checkbox" id="room-listed" checked/><span>열린 전장 목록에 공개</span><small>끄면 전장 코드를 아는 사람만 참가</small></label><div class="mode-picker" role="radiogroup" aria-label="경기 방식"><button data-mode="deathmatch" role="radio"><strong>격침전</strong><small>많이 격침한 함장이 승리</small></button><button data-mode="domination" role="radio"><strong>거점전</strong><small>거점 4곳 점령 · 600점 선취</small></button><button data-mode="team" role="radio"><strong>팀전</strong><small>홍군 대 청군 · ${TEAM_MATCH.killLimit}격침 선취</small></button></div><div id="player-list"></div><div class="npc-controls"><select id="bot-hull" aria-label="NPC 함종"><option value="destroyer">NPC 구축함</option><option value="cruiser">NPC 순양함</option><option value="battleship" selected>NPC 위장 전함</option><option value="wisconsin-golden">NPC Wisconsin Golden</option></select><select id="bot-skill" aria-label="NPC 지능"><option value="1">지능 1 · 초보</option><option value="2">지능 2 · 미숙</option><option value="3" selected>지능 3 · 보통</option><option value="4">지능 4 · 숙련</option><option value="5">지능 5 · 정예</option></select><button id="add-bot" class="outline">+ NPC 추가</button></div><p class="reward-outlook" data-place="lobby" hidden role="status"></p><div class="lobby-actions"><button id="ready" class="outline">출항 준비</button><button id="start" class="primary">출항 <span>→</span></button></div><small id="lobby-note">친구가 참가할 때까지 기다려 주세요.</small></div>
     </div>
+    <aside id="room-panel" class="room-panel" aria-label="열린 전장"><header><span>열린 전장</span><small>OPEN BATTLES</small><button id="room-refresh" class="text-button" aria-label="목록 새로고침">↻</button></header><div id="room-list"><p class="room-empty">불러오는 중…</p></div></aside>
     <aside class="ship-callout"><span id="ship-class">CRUISER / 순양함</span><h2 id="ship-name">청람</h2><p id="ship-role">정밀 포격 · 다목적 전투</p><div class="spec-bars" id="ship-specs"></div><div class="ship-label">기본 무장 <span id="ship-armament">203mm 주포 · 어뢰 · 부포</span></div><button id="preview-salvo" class="outline">주포 시연 · 음향 듣기</button><label class="volume-control">효과음 <input id="volume" type="range" min="0" max="100" value="72" aria-label="효과음 음량"/></label></aside>
     <div class="fleet-selection"><div class="selection-heading"><span>01 <b>함선 선택</b></span><small>각 함선은 매 경기 기본 무장으로 출항합니다.</small></div><div class="ship-cards">${(Object.keys(HULLS) as Hull[]).map((h, i) => `<button class="ship-card ${h === "cruiser" ? "selected" : ""}" data-hull="${h}" aria-pressed="${h === "cruiser"}"><span class="card-number">0${i + 1}</span>${hullIcon(h)}<span class="card-info"><strong>${HULLS[h].title} <small>${HULLS[h].name}</small></strong><span>${HULLS[h].role}</span></span><span class="selection-dot"></span></button>`).join("")}</div></div>
     <footer class="harbor-footer"><span>OPERATION 01 <b>군도 해역</b></span><span>THREE DIMENSIONS. ONE OCEAN.</span></footer>
@@ -112,7 +115,7 @@ $("app").innerHTML = `
     <div id="upgrade-panel" class="upgrade-panel hidden"><div class="panel-heading"><div><span class="eyebrow">FIELD MODIFICATION</span><h2>함선 강화 <b id="upgrade-points">0</b></h2></div><button id="upgrade-close" class="icon-button" aria-label="강화 창 닫기">×</button></div><p>전투는 계속됩니다. 항속과 항로를 확인하세요.</p><div id="upgrade-options"></div></div>
     <div id="scoreboard" class="modal-panel hidden"><h2>전투 현황</h2><div id="live-scores"></div></div>
   </section>
-  <section id="results" class="results hidden"><div class="result-card"><span class="eyebrow">OPERATION COMPLETE</span><h1>교전 종료</h1><p id="winner"></p><div id="result-scores"></div><div class="result-actions"><button id="rematch" class="primary">다음 출항 준비 →</button><button id="result-leave" class="outline">함대 나가기</button></div><small id="result-note"></small></div></section>
+  <section id="results" class="results hidden"><div class="result-card"><span class="eyebrow">OPERATION COMPLETE</span><h1>교전 종료</h1><p id="winner"></p><div id="result-scores"></div><div id="result-reward" class="result-reward" aria-live="polite"></div><div class="result-actions"><button id="rematch" class="primary">다음 출항 준비 →</button><button id="result-leave" class="outline">전장 나가기</button></div><small id="result-note"></small></div></section>
   <div id="help-modal" class="modal-overlay hidden"><div class="help-card"><button id="help-close" class="icon-button close" aria-label="조작 안내 닫기">×</button><span class="eyebrow">CAPTAIN'S HANDBOOK</span><h2>함선 지휘 안내</h2><div class="help-grid"><div><h3>항해</h3><p>W / S · 항속 단계 변경, 길게 눌러 연속 변경<br>좌초 시 S 길게 · 후진 탈출<br>A / D · 누르는 동안 조타<br>Q / E · 지속 조타<br>배는 즉시 멈추거나 선회하지 않습니다.</p><h3>시야와 조준</h3><p>화면 클릭 · 마우스 조준 시작<br>우클릭 유지 · 조준을 유지하고 둘러보기<br>휠 · 확대 / 축소<br>Shift · 쌍안경, X · 표적 지정<br>Esc · 커서 해제</p></div><div><h3>무장</h3><p>1 · 고폭탄 / 2 · 철갑탄 / 3 · 어뢰<br>4 · 반철갑탄 / 5 · 기뢰 / 6 · 대어뢰 로켓<br>클릭 · 포탑 하나 발사<br>더블클릭 · 준비된 주포 일제사격<br>길게 누르기 · 순차 사격<br>어뢰는 배의 측면으로 발사합니다.<br>기뢰는 함미 투하, 로켓은 어뢰 앞 수역 조준<br>P · 부포 자동 사격 전환</p><h3>방어와 성장</h3><p>R · 화재·침수 복구 (체력 회복 아님)<br>T · 연막 / 음향 탐지 / 수리반<br>Ctrl · 커서와 함선 강화<br>Tab · 점수판<br>사격 관제 강화 · 착탄 원 축소</p></div></div><p class="help-tip">측면을 노출하면 포문을 더 많이 쓸 수 있지만 철갑탄에 취약합니다. 주포 발사는 피탐지 거리를 늘립니다. 섬과 연막을 이용해 재배치하세요.</p></div></div>
   <div id="connection-overlay" class="connection-overlay hidden"><strong>통신 재연결 중</strong><span>함선은 기존 항속과 항로를 유지합니다.</span></div><div id="toast" role="status" aria-live="polite"></div>
 `;
@@ -187,6 +190,8 @@ function renderAccount() {
         await logout();
         account = null;
         renderAccount();
+        void refreshBalance();
+        renderOutlook();
       } catch (error) {
         toast(
           error instanceof Error ? error.message : "로그아웃하지 못했습니다.",
@@ -196,7 +201,7 @@ function renderAccount() {
     return;
   }
   $("connection-note").textContent =
-    "계정 없이 함대 코드를 공유해 친구와 출항할 수 있습니다.";
+    "계정 없이 전장 코드를 공유해 친구와 출항할 수 있습니다.";
   const list = walletChoices
     ? walletChoices.length
       ? `<div class="wallet-list">${walletChoices.map((w, i) => `<button class="outline" data-wallet="${i}">${esc(w.name)}</button>`).join("")}</div>`
@@ -227,6 +232,8 @@ async function walletSignIn(choice: WalletChoice) {
   try {
     account = await signInWithWallet(choice.provider);
     toast(`${account.name} 함장 · 지갑 로그인 완료`);
+    void refreshBalance();
+    void refreshOutlook();
   } catch (error) {
     toast(walletErrorMessage(error));
   } finally {
@@ -241,7 +248,76 @@ async function refreshAccount() {
     account = null;
   }
   renderAccount();
+  void refreshBalance();
+  void refreshOutlook();
 }
+// ── Pre-match notice when this game cannot pay CGC right now ──
+const OUTLOOK_POLL_MS = 15_000;
+let outlook = "OK";
+const OUTLOOK_TEXT: Record<string, string> = {
+  LOW_BUDGET:
+    "<b>게임 예산 부족</b> 지금은 경기 CGC 보상이 지급되지 않습니다. 경기는 정상적으로 할 수 있습니다.",
+  OFF: "<b>보상 꺼짐</b> 운영자가 경기 CGC 보상을 꺼 두었습니다. 경기는 정상적으로 할 수 있습니다.",
+};
+function renderOutlook() {
+  const text = account ? OUTLOOK_TEXT[outlook] : undefined;
+  document.querySelectorAll<HTMLElement>(".reward-outlook").forEach((el) => {
+    el.hidden = !text;
+    el.dataset.state = outlook.toLowerCase();
+    el.innerHTML = text ?? "";
+  });
+}
+async function refreshOutlook() {
+  try {
+    const res = await fetch("/api/rewards/outlook", { cache: "no-store" });
+    if (res.ok) outlook = ((await res.json()) as { outlook: string }).outlook;
+  } catch {
+    // Unknown: say nothing rather than warn wrongly.
+    outlook = "UNKNOWN";
+  }
+  renderOutlook();
+}
+setInterval(() => {
+  if (account && !document.body.classList.contains("playing"))
+    void refreshOutlook();
+}, OUTLOOK_POLL_MS);
+// ── CGC held by the signed-in wallet (harbor header) ──
+const BALANCE_POLL_MS = 10_000;
+let shownBalance: number | null = null;
+async function refreshBalance() {
+  const el = $("cgc-balance");
+  if (!account) {
+    el.hidden = true;
+    shownBalance = null;
+    return;
+  }
+  let view: { balance: string | null; error?: string };
+  try {
+    view = await fetchBalance();
+  } catch (error) {
+    view = { balance: null, error: walletErrorMessage(error) };
+  }
+  if (!account) return;
+  const value = view.balance === null ? null : Number(view.balance);
+  const gained =
+    value !== null && shownBalance !== null ? value - shownBalance : 0;
+  el.hidden = false;
+  el.title =
+    view.balance === null
+      ? (view.error ?? "잔액을 읽지 못했습니다.")
+      : `${view.balance} CGC · ${account.wallet}`;
+  el.innerHTML = `<small>보유 CGC</small><strong>${
+    value === null
+      ? "—"
+      : value.toLocaleString("ko-KR", { maximumFractionDigits: 2 })
+  }</strong>${gained > 0 ? `<em>+${gained.toLocaleString("ko-KR", { maximumFractionDigits: 2 })}</em>` : ""}`;
+  el.classList.toggle("gained", gained > 0);
+  if (value !== null) shownBalance = value;
+}
+setInterval(() => {
+  if (account && !document.body.classList.contains("playing"))
+    void refreshBalance();
+}, BALANCE_POLL_MS);
 function toast(message: string) {
   $("toast").textContent = message;
   $("toast").classList.add("show");
@@ -282,6 +358,7 @@ function connect(message?: ClientMessage) {
     switch (m.type) {
       case "welcome": {
         const fresh = !identity.token;
+        void refreshOutlook();
         identity = { id: m.id, room: m.room, token: m.token };
         sessionStorage.setItem("iron-tide-session", JSON.stringify(identity));
         connectionRetries = 0;
@@ -302,6 +379,10 @@ function connect(message?: ClientMessage) {
           $("results").classList.add("hidden");
           $("harbor").classList.remove("hidden");
         }
+        break;
+      case "reward":
+        matchReward = m;
+        if (phase === "results") renderMatchReward();
         break;
       case "snapshot":
         lastSnapshot = performance.now();
@@ -347,6 +428,7 @@ function connect(message?: ClientMessage) {
 }
 function clearSession() {
   void refreshAccount();
+  setTimeout(() => void refreshRooms());
   identity = { id: "", token: "", room: "" };
   sessionStorage.removeItem("iron-tide-session");
   clearTimeout(reconnectTimer);
@@ -376,6 +458,9 @@ function renderLobby() {
     lobby.mode === "team"
       ? teamLobby(lobby)
       : lobby.players.map(playerRow).join("");
+  const listed = $<HTMLInputElement>("room-listed");
+  listed.checked = lobby.listed;
+  listed.disabled = lobby.host !== identity.id;
   document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) => {
     const on = b.dataset.mode === lobby!.mode;
     b.classList.toggle("selected", on);
@@ -404,6 +489,12 @@ function renderLobby() {
           : `모든 함장이 준비하면 출항합니다. 플레이어·NPC 합계 최대 ${RULES.maxPlayers}척.`;
   ($("add-bot") as HTMLButtonElement).disabled =
     lobby.host !== identity.id || lobby.players.length >= RULES.maxPlayers;
+  $("add-bot").textContent =
+    lobby.mode === "team" ? "NPC로 양 팀 채우기" : "+ NPC 추가";
+  $("add-bot").title =
+    lobby.mode === "team"
+      ? "빈자리를 모두 NPC로 채워 두 팀을 같은 함선 구성으로 맞춥니다. 같게 맞출 수 없으면 약한 쪽에 더 큰 함선을 넣습니다."
+      : "";
   for (const id of ["bot-hull", "bot-skill"])
     ($(id) as HTMLSelectElement).disabled =
       lobby.host !== identity.id || lobby.players.length >= RULES.maxPlayers;
@@ -456,6 +547,7 @@ function selectHullUI(h: Hull) {
     .join("");
 }
 function enterBattle() {
+  matchReward = null;
   playing = true;
   phase = snap!.phase;
   handledEvents.clear();
@@ -471,7 +563,7 @@ function enterBattle() {
   $("harbor").classList.add("hidden");
   $("results").classList.add("hidden");
   $("battle").classList.remove("hidden");
-  $("battle-room").textContent = `함대 ${identity.room}`;
+  $("battle-room").textContent = `전장 ${identity.room}`;
   $("capture-prompt").classList.remove("hidden");
   audio.unlock();
 }
@@ -504,11 +596,43 @@ function showResults() {
           `<div class="${row} ${p.id === identity.id ? "mine" : ""}"${p.team !== undefined ? ` data-team="${p.team}"` : ""}><span><b>${i + 1}</b><strong>${esc(p.name)}<small>${p.team !== undefined ? `${TEAM_NAME[p.team]} · ` : ""}${HULLS[p.hull].title}</small></strong></span>${domination ? `<span>${number(p.score ?? 0)}</span>` : ""}<span>${p.kills}</span><span>${number(p.damage ?? 0)}</span><span>${Math.round((p.accuracy ?? 0) * 100)}%</span><span>${p.level}</span></div>`,
       )
       .join("");
+  renderMatchReward();
   ($("rematch") as HTMLButtonElement).disabled = snap!.host !== identity.id;
   $("result-note").textContent =
     snap!.host === identity.id
       ? "다음 경기는 레벨 1과 기본 무장으로 시작합니다."
       : "함대장이 다음 출항을 준비할 때까지 기다려 주세요.";
+}
+// ── CGC earned by the match that just ended (sent by the server once computed) ──
+let matchReward: RewardNotice | null = null;
+const cgcText = (amount: string) =>
+  `${Number(amount).toLocaleString("ko-KR", { maximumFractionDigits: 6 })} CGC`;
+function renderMatchReward() {
+  const el = $("result-reward");
+  const signedIn = snap?.scores.find((p) => p.id === identity.id)?.verified;
+  if (!signedIn) {
+    el.dataset.state = "guest";
+    el.innerHTML =
+      "<span>지갑으로 로그인하면 경기가 끝날 때마다 CGC 보상을 받습니다.</span>";
+    return;
+  }
+  const r = matchReward;
+  el.dataset.state = r ? r.status.toLowerCase() : "pending";
+  if (!r) {
+    el.innerHTML = "<span>이번 경기 보상을 계산하는 중…</span>";
+    return;
+  }
+  const items = r.items.length
+    ? `<ul>${r.items.map((i) => `<li><span>${esc(i.label)}</span><b>${cgcText(i.amount)}</b></li>`).join("")}</ul>`
+    : "";
+  const head: Record<RewardNotice["status"], string> = {
+    QUEUED: `<strong>+${cgcText(r.amount)}</strong><span>지갑으로 보내는 중 · 블록에 들어가면 보유 CGC에 반영됩니다</span>`,
+    HELD: `<strong>${cgcText(r.amount)} 보류</strong><span>게임 예산이 부족해 관리자 승인을 기다립니다</span>`,
+    SKIPPED: `<strong>이번 경기 보상 없음</strong><span>${esc(r.note ?? "")}</span>`,
+    OFF: `<strong>자동 보상 꺼짐</strong><span>운영자가 경기 보상을 꺼 두었습니다</span>`,
+  };
+  const note = r.status === "QUEUED" && r.note ? `<em>${esc(r.note)}</em>` : "";
+  el.innerHTML = `<small>이번 경기 보상</small><div class="reward-head">${head[r.status]}</div>${items}${note}`;
 }
 function handleEvents(s: Snapshot) {
   for (const e of s.events)
@@ -655,11 +779,59 @@ $("create-room").onclick = () => {
     name: ($("captain-name") as HTMLInputElement).value,
   });
 };
+$<HTMLInputElement>("room-listed").onchange = (e) =>
+  send({
+    type: "listed",
+    listed: (e.target as HTMLInputElement).checked,
+  });
+// ── Open battles in the harbor: pick one instead of typing a code ──
+const ROOM_POLL_MS = 5_000;
+const MODE_NAME: Record<GameMode, string> = {
+  deathmatch: "격침전",
+  domination: "거점전",
+  team: "팀전",
+};
+async function refreshRooms() {
+  if ($("connect-form").classList.contains("hidden") || document.hidden) return;
+  let rooms: RoomSummary[];
+  try {
+    const res = await fetch("/api/rooms", { cache: "no-store" });
+    if (!res.ok) throw new Error(String(res.status));
+    rooms = ((await res.json()) as { rooms: RoomSummary[] }).rooms;
+  } catch {
+    $("room-list").innerHTML =
+      '<p class="room-empty">전장 목록을 불러오지 못했습니다.</p>';
+    return;
+  }
+  $("room-list").innerHTML = rooms.length
+    ? rooms
+        .map(
+          (r) =>
+            `<div class="room-row${r.joinable ? "" : " busy"}"><span class="room-mode" data-mode="${r.mode}">${MODE_NAME[r.mode]}</span><div><strong>${esc(r.hostName)}<small>${esc(r.code)}</small></strong><span>${r.ships} / ${r.max}척 · ${r.phase === "lobby" ? (r.joinable ? "출항 대기" : "정원 마감") : r.phase === "battle" ? `교전 중 · ${timer(r.remaining)}` : "결과 확인 중"}</span></div><button class="outline" data-join-room="${esc(r.code)}" ${r.joinable ? "" : "disabled"}>${r.joinable ? "참가" : r.phase === "lobby" ? "만석" : "진행 중"}</button></div>`,
+        )
+        .join("")
+    : '<div class="room-none"><strong>열린 전장이 없습니다</strong><span>새 전장을 만들면 여기에 표시되어 다른 함장이 참가할 수 있습니다.</span><button class="outline" data-create-room>새 전장 생성</button></div>';
+}
+$("room-list").addEventListener("click", (e) => {
+  if ((e.target as Element).closest("[data-create-room]")) {
+    $("create-room").click();
+    return;
+  }
+  const button = (e.target as Element).closest<HTMLButtonElement>(
+    "[data-join-room]",
+  );
+  if (!button) return;
+  ($("room-code") as HTMLInputElement).value = button.dataset.joinRoom!;
+  $("join-room").click();
+});
+$("room-refresh").onclick = () => void refreshRooms();
+setInterval(() => void refreshRooms(), ROOM_POLL_MS);
+void refreshRooms();
 $("join-room").onclick = () => {
   audio.unlock();
   const room = ($("room-code") as HTMLInputElement).value.trim();
   if (!room) {
-    toast("친구에게 받은 함대 코드를 입력하세요.");
+    toast("친구에게 받은 전장 코드를 입력하거나 열린 전장 목록에서 고르세요.");
     return;
   }
   connect({
@@ -682,8 +854,8 @@ document.querySelectorAll<HTMLButtonElement>("[data-hull]").forEach(
 $("copy-code").onclick = () => {
   navigator.clipboard
     ?.writeText(identity.room)
-    .then(() => toast("함대 코드를 복사했습니다."))
-    .catch(() => toast(`함대 코드: ${identity.room}`));
+    .then(() => toast("전장 코드를 복사했습니다."))
+    .catch(() => toast(`전장 코드: ${identity.room}`));
 };
 $("ready").onclick = () =>
   send({
@@ -701,7 +873,8 @@ document
 $("add-bot").onclick = () => {
   const value = ($("bot-hull") as HTMLSelectElement).value;
   send({
-    type: "addBot",
+    // Team match: one press fills every free seat with matching fleets.
+    type: lobby?.mode === "team" ? "fillBots" : "addBot",
     hull: value === "wisconsin-golden" ? "battleship" : (value as Hull),
     model: value === "wisconsin-golden" ? "wisconsin-golden" : "camouflage",
     skill: Number(($("bot-skill") as HTMLSelectElement).value),
@@ -1129,12 +1302,6 @@ function renderIncoming(s: Snapshot["self"]) {
   audio.warning();
 }
 const PREVIEW_REACH = 120;
-// Button subtitles are narrow: shell code plus its switch time only.
-const SHELL_LABELS = [
-  ["HE", "HE"],
-  ["AP", "AP"],
-  ["SAP", "SAP"],
-] as const;
 /** A teammate in a team match (allies are always in the contact list). */
 function isAlly(id: string | undefined) {
   if (!snap || snap.mode !== "team" || !id || id === snap.self.id) return false;
@@ -1263,7 +1430,10 @@ function updateHUD() {
         return `<i class="broken"><b>${i + 1}</b><small>고장 ${Math.ceil(t.disabled!)}</small></i>`;
       const ready = t.reload <= 0;
       const aligned = Math.abs(angleDiff(t.angle, bearing(s, sea.aim))) < 0.065;
-      return `<i class="${ready && aligned ? "ready" : ""}"><b>${i + 1}</b><small>${ready ? (aligned ? "준비" : "선회") : t.reload.toFixed(1)}</small></i>`;
+      // The rammed shell fires as loaded; a different selection applies to the next load.
+      const ammo = t.ammo ?? "HE",
+        stale = isShell(weapon) && ammo !== weapon;
+      return `<i class="${ready && aligned ? "ready" : ""}"><b>${i + 1}</b><small>${ready ? (aligned ? "준비" : "선회") : t.reload.toFixed(1)}</small><em class="turret-ammo${stale ? " stale" : ""}" title="${stale ? `장전된 ${ammo} 발사 후 ${weapon}` : `${ammo} 장전`}">${ammo}</em></i>`;
     })
     .join("")}<small>부포 ${s.secondaries ? "ON" : "OFF"} · P</small>`;
   const utility = weapon === "MINE" || weapon === "RBU";
@@ -1325,11 +1495,6 @@ function updateHUD() {
         : `예상 분산 반경 ${solution.radius.toFixed(1)}m${weapon === "RBU" ? " · 로켓 6발" : ` · 관제 ${s.upgrades.accuracy}/3`}`;
   $("reticle").classList.toggle("ready", ready);
   $("reticle").classList.toggle("torpedo", weapon === "TORP");
-  const reload = c.reload * (1 - 0.07 * s.upgrades.reload);
-  for (const [shell, label] of SHELL_LABELS)
-    document.querySelector<HTMLElement>(
-      `[data-weapon="${shell}"] small`,
-    )!.textContent = `${label} · 전환 ${(reload * SHELL_SWITCH[shell]).toFixed(1)}초`;
   document.querySelector<HTMLElement>(
     '[data-weapon="MINE"] small',
   )!.textContent = `남은 ${s.minesLeft}발 · 함미 투하`;

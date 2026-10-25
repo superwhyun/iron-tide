@@ -113,7 +113,17 @@ export function sendError(res: ServerResponse, error: unknown) {
     });
   }
 }
-export function createAuthRoutes(store: AccountStore, auth: WalletAuth) {
+/** Wallet CGC for the signed-in captain. */
+export interface BalanceView {
+  /** On-chain balance, or null when it cannot be read right now. */
+  balance: string | null;
+  error?: string;
+}
+export function createAuthRoutes(
+  store: AccountStore,
+  auth: WalletAuth,
+  balanceOf?: (account: Account) => Promise<BalanceView>,
+) {
   const limit = createLimiter();
   return async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -124,6 +134,23 @@ export function createAuthRoutes(store: AccountStore, auth: WalletAuth) {
       if (route === "GET /api/me") {
         const account = store.accountForToken(token);
         json(res, 200, { account: account ? accountView(account) : null });
+        return true;
+      }
+      if (route === "GET /api/me/balance") {
+        const account = store.accountForToken(token);
+        if (!account)
+          throw new AuthError(
+            401,
+            "SIGN_IN_REQUIRED",
+            "지갑으로 로그인하세요.",
+          );
+        if (!balanceOf)
+          throw new AuthError(
+            503,
+            "BALANCE_UNAVAILABLE",
+            "잔액 조회가 설정되지 않았습니다.",
+          );
+        json(res, 200, await balanceOf(account));
         return true;
       }
       // Every state change must come from this game's own page.

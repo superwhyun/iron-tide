@@ -103,6 +103,74 @@ kbd {
   align-items: center;
   gap: 18px;
 }
+/* Wallet CGC in the harbor header: the one number a signed-in captain looks for. */
+.cgc-balance {
+  position: relative;
+  display: grid;
+  justify-items: end;
+  padding: 6px 14px 6px 16px;
+  border: 1px solid #e9c28c55;
+  border-left: 3px solid var(--gold);
+  background: linear-gradient(135deg, #2a2112cc, #0b2430cc);
+  box-shadow: 0 8px 24px #0004;
+  line-height: 1;
+}
+.cgc-balance[hidden] {
+  display: none;
+}
+.cgc-balance small {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: #c9b089;
+}
+.cgc-balance strong {
+  margin-top: 3px;
+  font: 700 30px "Rajdhani";
+  letter-spacing: 0.02em;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px #e9c28c40;
+}
+.cgc-balance em {
+  position: absolute;
+  left: -6px;
+  bottom: -9px;
+  padding: 1px 6px;
+  font: 700 11px "Rajdhani";
+  font-style: normal;
+  color: #062019;
+  background: var(--mint);
+  animation: cgc-gain 2.4s ease-out forwards;
+}
+.cgc-balance.gained strong {
+  animation: cgc-pop 0.6s ease-out;
+}
+@keyframes cgc-pop {
+  40% {
+    transform: scale(1.12);
+    text-shadow: 0 0 26px #e9c28caa;
+  }
+}
+@keyframes cgc-gain {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  15%,
+  70% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cgc-balance.gained strong,
+  .cgc-balance em {
+    animation: none;
+  }
+}
 .admin-link {
   font-size: 11px;
   letter-spacing: 0.03em;
@@ -1016,6 +1084,7 @@ h1 > span {
   letter-spacing: 0.1em;
 }
 #turret-display > i {
+  position: relative;
   font-style: normal;
   display: flex;
   flex-direction: column;
@@ -1750,6 +1819,8 @@ h1 > span {
 .result-card {
   width: 750px;
   max-width: 95vw;
+  max-height: 96vh;
+  overflow-y: auto;
   padding: 38px;
   background: #0d2938e6;
   border: 1px solid #86a1ad55;
@@ -2753,4 +2824,282 @@ h1 > span {
 #result-scores {
   max-height: 52vh;
   overflow-y: auto;
+}
+
+/* Shell in each turret's breech; amber when it differs from the selected shell. */
+.turret-ammo {
+  position: absolute;
+  top: -7px;
+  right: -5px;
+  padding: 0 3px;
+  font: 700 8px/12px "Rajdhani";
+  font-style: normal;
+  letter-spacing: 0.04em;
+  color: #cfe0e4;
+  background: #0b2230;
+  border: 1px solid #98aeb455;
+}
+.turret-ammo.stale {
+  color: #1b1408;
+  background: var(--amber);
+  border-color: var(--amber);
+}
+
+/* ───────── Open battles list & lobby visibility ───────── */
+/* Its own panel over the open sea, beside the connection card: the harbor
+   does not scroll, so the list must never sit below the fold. */
+.room-panel {
+  position: absolute;
+  top: 128px;
+  left: calc(5vw + 460px);
+  width: clamp(270px, 26vw, 360px);
+  max-height: max(170px, calc(100vh - 128px - 290px));
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 10px;
+  background: linear-gradient(135deg, #143341d9, #0b2430d9);
+  border: 1px solid #7995a535;
+  border-top: 2px solid var(--gold);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 40px #0003;
+  pointer-events: auto;
+}
+.in-room .room-panel {
+  display: none;
+}
+.room-panel > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.room-panel > header small {
+  font: 600 9px "Rajdhani";
+  letter-spacing: 0.2em;
+  color: #7f98a5;
+}
+.room-panel > header button {
+  margin-left: auto;
+  font-size: 14px;
+}
+#room-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.room-none {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 10px 0 6px;
+}
+.room-none strong {
+  font-size: 14px;
+}
+.room-none span {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8ca5b2;
+}
+.room-none .outline {
+  margin-top: 4px;
+  padding: 7px 14px;
+  font-size: 12px;
+}
+@media (max-height: 850px) {
+  .room-panel {
+    top: 100px;
+    max-height: max(160px, calc(100vh - 100px - 250px));
+  }
+}
+@media (max-width: 1100px) {
+  .room-panel {
+    left: calc(30px + 450px);
+  }
+}
+@media (max-width: 900px) {
+  .room-panel {
+    position: static;
+    width: 370px;
+    max-height: 200px;
+    margin-top: 10px;
+  }
+}
+.room-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid #a9c5ce18;
+}
+.room-row:first-child {
+  border-top: 0;
+}
+.room-row > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.room-row strong {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.room-row strong small {
+  margin-left: 6px;
+  font: 600 10px "Rajdhani";
+  letter-spacing: 0.12em;
+  color: #8ca5b2;
+}
+.room-row > div > span {
+  font-size: 10px;
+  color: #8ca5b2;
+}
+.room-row .outline {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 11px;
+}
+.room-row.busy {
+  opacity: 0.55;
+}
+.room-mode {
+  flex-shrink: 0;
+  width: 44px;
+  padding: 3px 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  border: 1px solid #e9c28c55;
+}
+.room-mode[data-mode="domination"] {
+  color: var(--mint);
+  border-color: #87d6c355;
+}
+.room-mode[data-mode="team"] {
+  color: #8fc4ff;
+  border-color: #8fc4ff55;
+}
+.room-empty {
+  margin: 4px 0;
+  font-size: 10px;
+  color: #7f98a5;
+}
+.connection-card .listed-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 8px;
+  margin: 10px 0 0;
+  cursor: pointer;
+}
+.listed-toggle input {
+  accent-color: var(--gold);
+}
+.listed-toggle small {
+  grid-column: 2;
+  font-size: 9px;
+  color: #7f98a5;
+}
+.listed-toggle:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* ───────── Match reward on the results card ───────── */
+.result-reward {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #8fadb980;
+  background: #0b2430b3;
+  font-size: 12px;
+  color: #b5c7cd;
+}
+.result-reward > small {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: #c9b089;
+}
+.result-reward[data-state="queued"] {
+  border-left-color: var(--gold);
+  background: linear-gradient(135deg, #2a2112b3, #0b2430b3);
+}
+.result-reward[data-state="held"] {
+  border-left-color: #e7c26e;
+}
+.reward-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+}
+.reward-head strong {
+  font: 700 26px "Rajdhani";
+  color: #e9e1d2;
+}
+.result-reward[data-state="queued"] .reward-head strong {
+  color: var(--gold);
+  text-shadow: 0 0 16px #e9c28c40;
+}
+.result-reward ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.result-reward li {
+  display: flex;
+  gap: 6px;
+  padding: 3px 8px;
+  background: #ffffff0d;
+  border: 1px solid #a9c5ce22;
+}
+.result-reward li b {
+  font: 600 12px "Rajdhani";
+  color: var(--gold);
+}
+.result-reward em {
+  font-style: normal;
+  color: #e7c26e;
+}
+
+/* Pre-match notice: the battle goes on, but this game cannot pay CGC now. */
+.reward-outlook {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #f1dcae;
+  background: #3a2a1266;
+  border: 1px solid #e7c26e55;
+  border-left: 3px solid #e7c26e;
+}
+.reward-outlook[hidden] {
+  display: none;
+}
+.reward-outlook b {
+  margin-right: 6px;
+  color: #e7c26e;
+}
+.reward-outlook[data-state="off"] {
+  color: #c7d4d8;
+  background: #0b243099;
+  border-color: #8fadb955;
+  border-left-color: #8fadb9;
+}
+.reward-outlook[data-state="off"] b {
+  color: #c7d4d8;
 }
