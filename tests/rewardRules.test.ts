@@ -57,6 +57,7 @@ const match = (
   mode: "deathmatch",
   endedAt: Date.now(),
   duration: 480,
+  winner: null,
   entries,
   ...extra,
 });
@@ -136,6 +137,23 @@ describe("reward rules", () => {
     );
     // a: rank 5 + zone 1.8 + no sinking 1 + join 0.5
     expect(paid(m)).toEqual({ a: micro("8.3"), b: micro("4.25") });
+  });
+  it("pays the team win bonus to every captain of the winning fleet", () => {
+    const m = match(
+      [
+        entry(1, "a", {}, { team: 1 }),
+        entry(2, "b", {}, { team: 1 }),
+        entry(3, "c", {}, { team: 0 }),
+      ],
+      { mode: "team", winner: 1 },
+    );
+    // a: rank 5 + win 2 + join 0.5; c: rank 1 + join 0.5
+    expect(paid(m)).toEqual({
+      a: micro("7.5"),
+      b: micro("5.5"),
+      c: micro("1.5"),
+    });
+    expect(paid({ ...m, winner: null }).b).toBe(micro("3.5"));
   });
   it("skips short matches, too few wallet captains and pre-ledger matches", () => {
     expect(

@@ -60,7 +60,8 @@ const adminRoutes = createAdminRoutes(
 /** Matches already written to account records, so results are counted once. */
 const recorded = new WeakSet<Game>();
 function recordResults(g: Game) {
-  const ranking = g.ranking();
+  const ranking = g.ranking(),
+    winner = g.winner();
   const match = accounts.saveMatch(
     g.code,
     g.mode,
@@ -76,10 +77,12 @@ function recordResults(g: Game) {
         damage: Math.round(ship.stats.damage),
         score: Math.floor(ship.stats.score),
         ...(npcSkill ? { npcSkill } : {}),
+        ...(g.mode === "team" ? { team: g.teamOf(ship.id) } : {}),
         ledger: g.ledger.get(ship.id) ?? emptyLedger(),
       };
     }),
     Math.round(g.time),
+    winner,
   );
   ranking.forEach((ship, place) => {
     const account = g.accounts.get(ship.id);
@@ -88,7 +91,11 @@ function recordResults(g: Game) {
       kills: ship.stats.kills,
       deaths: ship.stats.deaths,
       damage: ship.stats.damage,
-      won: place === 0,
+      // Team matches: every captain of the winning fleet wins.
+      won:
+        g.mode === "team"
+          ? winner !== null && g.teamOf(ship.id) === winner
+          : place === 0,
     });
   });
   // Failures are logged inside settle(); the match itself is already saved.
@@ -402,6 +409,10 @@ wss.on("connection", (ws, req) => {
           break;
         case "mode":
           g.setMode(s.id, m.mode);
+          broadcast(g);
+          break;
+        case "team":
+          g.setTeam(s.id, typeof m.id === "string" ? m.id : s.id, m.team);
           broadcast(g);
           break;
         case "removeBot":

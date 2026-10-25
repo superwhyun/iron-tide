@@ -24,11 +24,13 @@ export class Ordnance {
       s.rocketReload = Math.max(0, s.rocketReload - dt);
     }
   }
-  visible(self: Ship) {
+  /** Own and allied mines always; others only within sight or sonar range. */
+  visible(self: Ship, allied: (owner: string) => boolean = () => false) {
     return this.mines
       .filter(
         (m) =>
           m.owner === self.id ||
+          allied(m.owner) ||
           (dist(m, self) < (self.status.sonar > 0 ? 430 : 110) &&
             !ISLANDS.some((i) => islandBlocksLine(i, self, m))),
       )
@@ -135,7 +137,12 @@ export class Ordnance {
     let intercepted = 0;
     if (!mine) {
       for (const p of this.game.projectiles) {
-        if (p.kind !== "TORP" || p.owner === owner || removed.has(p.id))
+        if (
+          p.kind !== "TORP" ||
+          p.owner === owner ||
+          this.game.allied(p.owner, owner) ||
+          removed.has(p.id)
+        )
           continue;
         if (
           dist(point, p) <= cfg.blast &&
@@ -186,6 +193,7 @@ export class Ordnance {
         [...this.game.players.values()].some(
           (s) =>
             s.id !== m.owner &&
+            !this.game.allied(s.id, m.owner) &&
             s.alive &&
             dist(s, m) < HULLS[s.hull].beam * 0.5 + 7,
         )
@@ -204,7 +212,11 @@ export class Ordnance {
       if (p.kind !== "RBU" || (p.delay && p.delay > 0) || p.y > 4) continue;
       if (
         this.game.projectiles.some(
-          (t) => t.kind === "TORP" && t.owner !== p.owner && dist(t, p) < 12,
+          (t) =>
+            t.kind === "TORP" &&
+            t.owner !== p.owner &&
+            !this.game.allied(t.owner, p.owner) &&
+            dist(t, p) < 12,
         )
       ) {
         removed.add(p.id);

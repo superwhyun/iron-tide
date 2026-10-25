@@ -6,7 +6,7 @@ import {
   walletErrorMessage,
   type WalletChoice,
 } from "../wallet";
-import { AMOUNT, coins, esc, short, time, toMicro } from "./format";
+import { AMOUNT, coins, esc, modeName, short, time, toMicro } from "./format";
 import { RulesTab } from "./rulesTab";
 
 interface Status {
@@ -248,7 +248,7 @@ function matchesPanel(o: Overview) {
   return `<section class="panel"><header><h2>최근 경기</h2><small>지갑 계정만 선택할 수 있습니다</small></header><div class="matches">${o.matches
     .map(
       (m) => `<article class="match">
-      <header><strong>${m.mode === "domination" ? "거점전" : "격침전"}</strong><span>#${m.id} · 함대 ${esc(m.room)} · ${time(m.endedAt)}</span></header>
+      <header><strong>${modeName(m.mode)}</strong><span>#${m.id} · 함대 ${esc(m.room)} · ${time(m.endedAt)}</span></header>
       <ol>${m.entries
         .map(
           (e) =>

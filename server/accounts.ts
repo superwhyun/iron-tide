@@ -1,4 +1,5 @@
 import type { CombatLedger } from "./game";
+import type { Team } from "../shared/types";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -36,6 +37,8 @@ export interface MatchEntry {
   score: number;
   /** NPC skill 1–5; absent for people. */
   npcSkill?: number;
+  /** Fleet in a team match. */
+  team?: Team;
   /** Kills and damage split by victim type, for reward rules. */
   ledger?: CombatLedger;
 }
@@ -46,6 +49,8 @@ export interface MatchSummary {
   endedAt: number;
   /** Battle length in seconds (0 for matches saved before it was recorded). */
   duration: number;
+  /** Winning fleet of a team match (null on a dead heat or other modes). */
+  winner: Team | null;
   entries: MatchEntry[];
 }
 export interface Challenge {
@@ -125,6 +130,8 @@ export class AccountStore {
       this.db.exec(
         "ALTER TABLE matches ADD COLUMN duration REAL NOT NULL DEFAULT 0",
       );
+    if (!matchColumns.some((c) => c.name === "winner"))
+      this.db.exec("ALTER TABLE matches ADD COLUMN winner INTEGER");
   }
   close() {
     this.db.close();
@@ -273,17 +280,18 @@ export class AccountStore {
     mode: string,
     entries: MatchEntry[],
     duration = 0,
+    winner: Team | null = null,
   ): MatchSummary {
     const endedAt = Date.now();
     const id = Number(
       this.db
         .prepare(
-          "INSERT INTO matches(room,mode,ended_at,entries,duration) VALUES(?,?,?,?,?)",
+          "INSERT INTO matches(room,mode,ended_at,entries,duration,winner) VALUES(?,?,?,?,?,?)",
         )
-        .run(room, mode, endedAt, JSON.stringify(entries), duration)
+        .run(room, mode, endedAt, JSON.stringify(entries), duration, winner)
         .lastInsertRowid,
     );
-    return { id, room, mode, endedAt, duration, entries };
+    return { id, room, mode, endedAt, duration, winner, entries };
   }
   recentMatches(limit = 30): MatchSummary[] {
     const rows = this.db
@@ -295,6 +303,10 @@ export class AccountStore {
       mode: String(r.mode),
       endedAt: Number(r.ended_at),
       duration: Number(r.duration ?? 0),
+      winner:
+        r.winner === null || r.winner === undefined
+          ? null
+          : (Number(r.winner) as Team),
       entries: JSON.parse(String(r.entries)) as MatchEntry[],
     }));
   }

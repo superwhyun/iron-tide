@@ -74,12 +74,16 @@ test("solo NPC match: imported armed ship, live AI, torpedo sound, speed audio a
   }
   await expect(page.locator(".player-row")).toHaveCount(4);
   await expect(page.locator("#player-list")).toContainText("Wisconsin Golden");
+  // Fill the fleet to its eight-ship limit.
+  await page.locator("#bot-hull").selectOption("destroyer");
+  for (let i = 0; i < 4; i++) await page.locator("#add-bot").click();
+  await expect(page.locator(".player-row")).toHaveCount(8);
   await expect(page.locator("#add-bot")).toBeDisabled();
   await page.screenshot({ path: "artifacts/browser-npc-lobby.png" });
-  await page.locator("[data-remove-bot]").last().click();
-  await expect(page.locator(".player-row")).toHaveCount(3);
-  await page.locator("[data-remove-bot]").last().click();
-  await expect(page.locator(".player-row")).toHaveCount(2);
+  for (let left = 7; left >= 2; left--) {
+    await page.locator("[data-remove-bot]").last().click();
+    await expect(page.locator(".player-row")).toHaveCount(left);
+  }
   await page.locator("#ready").click();
   await page.locator("#start").click();
   await expect(page.locator("#battle")).toBeVisible();

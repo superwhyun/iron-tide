@@ -44,13 +44,13 @@ describe("NPC captains", () => {
     g.rematch("human");
     expect(g.players.get(id)?.npcModel).toBe("wisconsin-golden");
   });
-  it("requires host control, shares the four slots, and preserves NPC readiness across rematches", () => {
+  it("requires host control, shares the eight slots, and preserves NPC readiness across rematches", () => {
     const g = new Game("LOBBY", 1);
     g.add("host", "H");
     g.add("guest", "G");
     expect(() => g.addBot("guest", "cruiser")).toThrow("함대장");
     const bot = g.addBot("host", "battleship");
-    g.addBot("host", "destroyer");
+    for (let i = 0; i < 5; i++) g.addBot("host", "destroyer");
     expect(g.lobby().players.find((p) => p.id === bot)).toMatchObject({
       bot: true,
       ready: true,
@@ -69,7 +69,7 @@ describe("NPC captains", () => {
     expect(g.ready.has(bot)).toBe(true);
     expect(g.ready.has("host")).toBe(false);
     g.removeBot("host", bot);
-    expect(g.players.size).toBe(3);
+    expect(g.players.size).toBe(7);
     g.remove("host");
     expect(g.host).toBe("guest");
   });

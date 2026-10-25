@@ -20,7 +20,7 @@ export const RULES = {
   tick: 30,
   snapshot: 15,
   duration: 480,
-  maxPlayers: 4,
+  maxPlayers: 8,
   respawn: 5,
   reconnect: 30,
   world: 1500,
@@ -28,6 +28,18 @@ export const RULES = {
   maxLevel: 10,
   forcedDetection: 100,
 };
+/**
+ * Changing shell type reloads the guns for this fraction of the full reload:
+ * HE rams fastest, armour-piercing AP slowest. A turret already further from
+ * ready keeps its own timer.
+ */
+export const SHELL_SWITCH: Record<"HE" | "SAP" | "AP", number> = {
+  HE: 0.4,
+  SAP: 0.5,
+  AP: 0.6,
+};
+/** Team match: the first fleet to sink this many ships wins. */
+export const TEAM_MATCH = { killLimit: 15, size: RULES.maxPlayers / 2 };
 export interface HullConfig {
   name: string;
   title: string;

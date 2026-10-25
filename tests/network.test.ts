@@ -88,8 +88,9 @@ describe("real WebSocket authority and session lifecycle", () => {
       expect(
         (await b.wait("error", (m) => m.message.includes("추가"))).message,
       ).toContain("함대장");
-      a.send({ type: "addBot", hull: "destroyer" });
-      const full = await a.wait("lobby", (m) => m.players.length === 4);
+      // Fill the remaining seats up to the eight-ship limit.
+      for (let i = 0; i < 5; i++) a.send({ type: "addBot", hull: "destroyer" });
+      const full = await a.wait("lobby", (m) => m.players.length === 8);
       c.send({ type: "join", room: first.room, name: "C" });
       expect((await c.wait("error")).message).toContain("정원");
       const other = full.players.find((p) => p.bot && p.id !== bot.id)!;
@@ -97,7 +98,7 @@ describe("real WebSocket authority and session lifecycle", () => {
       await b.wait(
         "lobby",
         (m) =>
-          m.players.length === 3 && !m.players.some((p) => p.id === other.id),
+          m.players.length === 7 && !m.players.some((p) => p.id === other.id),
       );
       await a.close();
       await b.wait("lobby", (m) => m.host === second.id);

@@ -1505,6 +1505,13 @@ h1 > span {
 #hit-floats {
   will-change: transform;
 }
+/* The transform makes this the labels' containing block, so it must cover the
+   viewport from (0, 0) or every ship label lands below its ship. */
+#contacts {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
 .contact {
   position: absolute;
   transform: translate(-50%, -100%);
@@ -2586,4 +2593,164 @@ h1 > span {
   font: 500 12px "Rajdhani";
   color: #c9dbe0;
   letter-spacing: 0.03em;
+}
+
+/* ───────── Team match & eight-ship fleets ───────── */
+:root {
+  --team-red: #ff8f74;
+  --team-blue: #8fc4ff;
+}
+.mode-picker {
+  grid-template-columns: repeat(3, 1fr);
+}
+#player-list {
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.team-group {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--team-red);
+}
+.team-group[data-team="1"] {
+  border-left-color: var(--team-blue);
+}
+.team-group > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 6px;
+  font-size: 11px;
+}
+.team-group > header b {
+  color: var(--team-red);
+  letter-spacing: 0.08em;
+}
+.team-group[data-team="1"] > header b {
+  color: var(--team-blue);
+}
+.team-group > header span {
+  color: #8ca5b2;
+  font: 600 11px "Rajdhani";
+}
+.join-team {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  border: 1px solid #8fadb980;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.join-team:hover {
+  border-color: var(--gold);
+  background: #4a3a2244;
+}
+.team-group .player-row {
+  padding: 7px 0;
+}
+.team-empty {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 10px;
+  color: #6f8794;
+}
+.move-bot {
+  font-size: 13px;
+  color: #9db5be;
+  padding: 2px 4px;
+}
+.move-bot:hover {
+  color: var(--gold);
+}
+
+.contact.ally > span,
+.contact.ally > strong {
+  color: #cfe5ff;
+}
+.contact.ally > div {
+  background: #10223acc;
+  border-color: #8fc4ff55;
+}
+.contact.ally i {
+  background: linear-gradient(90deg, #4f9be8, #9fd0ff);
+  box-shadow: 0 0 6px #6aaeff;
+}
+.contact.ally::after {
+  border-color: var(--team-blue);
+}
+
+.team-bar {
+  position: absolute;
+  left: 28px;
+  top: 78px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.team-bar em {
+  font: 600 13px "Rajdhani";
+  font-style: normal;
+  color: #8ca5b2;
+}
+.team-score {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 8px;
+  padding: 6px 12px 8px;
+  background: #0b2430cc;
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--team-red);
+}
+.team-score[data-team="1"] {
+  border-top-color: var(--team-blue);
+}
+.team-score small {
+  font-size: 10px;
+  color: #a9bec8;
+}
+.team-score strong {
+  font: 700 28px "Rajdhani";
+  line-height: 1;
+  color: var(--team-red);
+}
+.team-score[data-team="1"] strong {
+  color: var(--team-blue);
+}
+.team-score i {
+  grid-column: 1 / -1;
+  height: 3px;
+  margin-top: 4px;
+  background: #ffffff18;
+  position: relative;
+  overflow: hidden;
+}
+.team-score i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  color: var(--team-red);
+  transform-origin: left;
+  transform: scaleX(var(--fill, 0));
+  transition: transform 0.3s ease-out;
+}
+.team-score[data-team="1"] i::after {
+  color: var(--team-blue);
+}
+.score-row[data-team="0"],
+.result-row[data-team="0"] {
+  box-shadow: inset 3px 0 var(--team-red);
+  padding-left: 12px;
+}
+.score-row[data-team="1"],
+.result-row[data-team="1"] {
+  box-shadow: inset 3px 0 var(--team-blue);
+  padding-left: 12px;
+}
+#result-scores {
+  max-height: 52vh;
+  overflow-y: auto;
 }

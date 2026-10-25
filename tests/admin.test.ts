@@ -1,5 +1,5 @@
 import { AutoRewards } from "../server/autoRewards";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { privateKeyToAccount } from "viem/accounts";
@@ -217,7 +217,11 @@ describe("admin console", () => {
       amount: "3.000000",
       memo: "1위 보상",
     });
-    await queue.tick();
+    // The route already started a background send; wait for it to settle.
+    await vi.waitFor(async () => {
+      await queue.tick();
+      expect(queue.list()[0].status).toBe("DONE");
+    });
     const after = await api("GET", "/api/admin/overview", undefined, admin);
     expect(after.body.rewards[0].status).toBe("DONE");
     expect(

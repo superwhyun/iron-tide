@@ -28,5 +28,7 @@ export const toMicro = (a: string) =>
     ? BigInt(a.split(".")[0]) * 1_000_000n +
       BigInt((a.split(".")[1] ?? "").padEnd(6, "0"))
     : 0n;
+export const modeName = (mode: string) =>
+  mode === "domination" ? "거점전" : mode === "team" ? "팀전" : "격침전";
 export const errorText = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;

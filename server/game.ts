@@ -8,6 +8,8 @@ import {
   respawnDelay,
   mainCaliber,
   NPC_MODELS,
+  TEAM_MATCH,
+  SHELL_SWITCH,
 } from "../shared/config";
 import {
   angleDiff,
@@ -38,6 +40,7 @@ import type {
   GameMode,
   Zone,
   BuffKind,
+  Team,
 } from "../shared/types";
 import { islandBlocksLine, terrainHeight } from "../shared/terrain";
 import { moveAlongShore, nearShore } from "../shared/navigation";
@@ -228,6 +231,88 @@ export function resolveArmor(
   return { result: "penetration", damage: damage * 0.33 };
 }
 
+/** How quickly a ship driving head-on into another hull loses way (per second). */
+const RAM_DRAG = 6;
+/** Bow-to-stern centre line of a hull, inset by half the beam (capsule core). */
+function hullCore(s: Ship) {
+  const c = HULLS[s.hull],
+    half = Math.max(0, c.length / 2 - c.beam / 2),
+    dx = Math.sin(s.heading) * half,
+    dz = Math.cos(s.heading) * half;
+  return { a: { x: s.x - dx, z: s.z - dz }, b: { x: s.x + dx, z: s.z + dz } };
+}
+/** Closest points of two segments in the sea plane. */
+function closestPoints(p1: Vec2, q1: Vec2, p2: Vec2, q2: Vec2) {
+  const d1 = { x: q1.x - p1.x, z: q1.z - p1.z },
+    d2 = { x: q2.x - p2.x, z: q2.z - p2.z },
+    r = { x: p1.x - p2.x, z: p1.z - p2.z };
+  const a = d1.x * d1.x + d1.z * d1.z,
+    e = d2.x * d2.x + d2.z * d2.z,
+    f = d2.x * r.x + d2.z * r.z;
+  let s = 0,
+    t = 0;
+  if (a < 1e-9 && e < 1e-9) return { c1: p1, c2: p2 };
+  if (a < 1e-9) t = clamp(f / e, 0, 1);
+  else {
+    const c = d1.x * r.x + d1.z * r.z;
+    if (e < 1e-9) s = clamp(-c / a, 0, 1);
+    else {
+      const b = d1.x * d2.x + d1.z * d2.z,
+        denom = a * e - b * b;
+      s = denom > 1e-9 ? clamp((b * f - c * e) / denom, 0, 1) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp(-c / a, 0, 1);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp((b - c) / a, 0, 1);
+      }
+    }
+  }
+  return {
+    c1: { x: p1.x + d1.x * s, z: p1.z + d1.z * s },
+    c2: { x: p2.x + d2.x * t, z: p2.z + d2.z * t },
+  };
+}
+/** Penetration of two capsule hulls: unit normal from a to b and depth. */
+export function hullContact(a: Ship, b: Ship) {
+  const ca = hullCore(a),
+    cb = hullCore(b);
+  const { c1, c2 } = closestPoints(ca.a, ca.b, cb.a, cb.b);
+  const reach = (HULLS[a.hull].beam + HULLS[b.hull].beam) / 2;
+  let nx = c2.x - c1.x,
+    nz = c2.z - c1.z;
+  const d = Math.hypot(nx, nz);
+  if (d >= reach) return null;
+  if (d > 1e-6) {
+    nx /= d;
+    nz /= d;
+  } else {
+    // Exactly on top of each other: part abeam of a's heading.
+    nx = Math.cos(a.heading);
+    nz = -Math.sin(a.heading);
+  }
+  return { nx, nz, depth: reach - d };
+}
+
+/** Free-for-all spawns, one per seat, spread around the archipelago. */
+const FREE_SPAWNS: Vec2[] = [
+  { x: -760, z: -700 },
+  { x: 760, z: 700 },
+  { x: 760, z: -700 },
+  { x: -760, z: 700 },
+  { x: -1200, z: 900 },
+  { x: 1200, z: -900 },
+  { x: -1250, z: -300 },
+  { x: 1250, z: 300 },
+];
+/** Team spawns: red fleet on the west edge, blue on the east. */
+const TEAM_SPAWNS: Record<Team, Vec2[]> = {
+  0: [-750, -250, 250, 750].map((z) => ({ x: -1250, z })),
+  1: [-750, -250, 250, 750].map((z) => ({ x: 1250, z })),
+};
+
 export interface CombatLedger {
   player: { kills: number; damage: number };
   /** Index 0–4 = NPC skill 1–5. */
@@ -245,6 +330,8 @@ export class Game {
   mode: GameMode = "deathmatch";
   /** Player id → wallet account id, for players who signed in. */
   accounts = new Map<string, string>();
+  /** Player id → fleet. Kept in every mode so a switch to team play is instant. */
+  teams = new Map<string, Team>();
   zones: Zone[] = [];
   time = 0;
   remaining: number;
@@ -279,9 +366,10 @@ export class Game {
     if (this.phase !== "lobby")
       throw Error("이미 출항한 함대입니다. 다음 경기에 참가해 주세요.");
     if (this.players.size >= RULES.maxPlayers)
-      throw Error("함대 정원은 4명입니다.");
+      throw Error(`함대 정원은 ${RULES.maxPlayers}명입니다.`);
     const s = makeShip(id, name);
     this.players.set(id, s);
+    this.teams.set(id, this.smallerTeam());
     if (account) this.accounts.set(id, account);
     if (!this.host) this.host = id;
     return s;
@@ -321,9 +409,75 @@ export class Game {
       throw Error("함대장만 경기 방식을 바꿀 수 있습니다.");
     if (this.phase !== "lobby")
       throw Error("출항 전에만 경기 방식을 바꿀 수 있습니다.");
-    if (mode !== "deathmatch" && mode !== "domination")
+    if (mode !== "deathmatch" && mode !== "domination" && mode !== "team")
       throw Error("알 수 없는 경기 방식입니다.");
     this.mode = mode;
+  }
+  /** Moves yourself, or (host only) an NPC, to `team` while in the lobby. */
+  setTeam(requester: string, id: string, team: Team) {
+    if (this.phase !== "lobby")
+      throw Error("출항 전에만 팀을 바꿀 수 있습니다.");
+    const ship = this.players.get(id);
+    if (!ship) throw Error("없는 함장입니다.");
+    if (id !== requester && !(ship.bot && requester === this.host))
+      throw Error("자기 팀만 바꿀 수 있습니다. NPC는 함대장이 배치합니다.");
+    if (team !== 0 && team !== 1) throw Error("알 수 없는 팀입니다.");
+    if (this.teams.get(id) === team) return;
+    if (this.teamMembers(team).length >= TEAM_MATCH.size)
+      throw Error(`한 팀은 최대 ${TEAM_MATCH.size}척입니다.`);
+    this.teams.set(id, team);
+    this.ready.delete(id);
+    if (ship.bot) this.ready.add(id);
+  }
+  teamOf(id: string) {
+    return this.teams.get(id);
+  }
+  /** True for two different ships on the same fleet in a team match. */
+  allied(a: string, b: string) {
+    if (this.mode !== "team" || a === b) return false;
+    const t = this.teams.get(a);
+    return t !== undefined && t === this.teams.get(b);
+  }
+  private teamMembers(team: Team) {
+    return [...this.players.keys()].filter((id) => this.teams.get(id) === team);
+  }
+  private smallerTeam(): Team {
+    return this.teamMembers(1).length < this.teamMembers(0).length ? 1 : 0;
+  }
+  /** Sinkings per fleet so far. */
+  teamKills(): [number, number] {
+    const kills: [number, number] = [0, 0];
+    for (const s of this.players.values()) {
+      const t = this.teams.get(s.id);
+      if (t !== undefined) kills[t] += s.stats.kills;
+    }
+    return kills;
+  }
+  /** Winning fleet: more kills, then more damage; null on a dead heat. */
+  winner(): Team | null {
+    if (this.mode !== "team") return null;
+    const [red, blue] = this.teamKills();
+    if (red !== blue) return red > blue ? 0 : 1;
+    const damage = [0, 0];
+    for (const s of this.players.values()) {
+      const t = this.teams.get(s.id);
+      if (t !== undefined) damage[t] += s.stats.damage;
+    }
+    return damage[0] === damage[1] ? null : damage[0] > damage[1] ? 0 : 1;
+  }
+  /** Own sight, plus whatever a living teammate sees in a team match. */
+  sees(observer: Ship, target: Ship) {
+    if (this.visible(observer, target)) return true;
+    if (this.mode !== "team" || !target.alive) return false;
+    if (this.allied(observer.id, target.id)) return true;
+    for (const ally of this.players.values())
+      if (
+        ally.alive &&
+        this.allied(observer.id, ally.id) &&
+        this.visible(ally, target)
+      )
+        return true;
+    return false;
   }
   removeBot(host: string, id: string) {
     if (host !== this.host) throw Error("함대장만 NPC를 제외할 수 있습니다.");
@@ -336,6 +490,7 @@ export class Game {
   remove(id: string) {
     this.players.delete(id);
     this.accounts.delete(id);
+    this.teams.delete(id);
     this.captains.delete(id);
     this.ready.delete(id);
     this.lastSeen.delete(id);
@@ -359,6 +514,11 @@ export class Game {
     if (this.phase !== "lobby") throw Error("이미 진행 중인 경기입니다.");
     if (this.players.size < 2) throw Error("최소 2명의 함장이 필요합니다.");
     if (
+      this.mode === "team" &&
+      (!this.teamMembers(0).length || !this.teamMembers(1).length)
+    )
+      throw Error("팀전은 홍군과 청군에 각각 1척 이상 필요합니다.");
+    if (
       [...this.players.values()].some(
         (s) => !s.connected || !this.ready.has(s.id),
       )
@@ -378,7 +538,8 @@ export class Game {
     this.ordnance.reset();
     this.zones = this.mode === "domination" ? createZones() : [];
     this.supply.reset();
-    let i = 0;
+    // Seats are counted per fleet in team play so no two allies share a spawn.
+    const seats = new Map<Team | "all", number>();
     for (const [key, old] of this.players) {
       const s = {
         ...makeShip(key, old.name, old.hull),
@@ -387,7 +548,11 @@ export class Game {
       };
       this.players.set(key, s);
       this.captains.get(key)?.reset();
-      this.spawn(s, i++);
+      const group =
+        this.mode === "team" ? (this.teams.get(key) ?? "all") : "all";
+      const seat = seats.get(group) ?? 0;
+      seats.set(group, seat + 1);
+      this.spawn(s, seat);
     }
   }
   rematch(id: string) {
@@ -414,21 +579,17 @@ export class Game {
     this.events.push({ ...e, id: ++this.serial, at: this.time });
   }
   private spawn(s: Ship, index?: number) {
-    const points = [
-      { x: -760, z: -700 },
-      { x: 760, z: 700 },
-      { x: 760, z: -700 },
-      { x: -760, z: 700 },
-      { x: -1200, z: 900 },
-      { x: 1200, z: -900 },
-    ];
-    let p = points[index ?? 0];
+    const team = this.mode === "team" ? this.teams.get(s.id) : undefined;
+    const points = team === undefined ? FREE_SPAWNS : TEAM_SPAWNS[team];
+    let p = points[(index ?? 0) % points.length];
     if (index === undefined)
       p = points.reduce((best, next) => {
         const score = (q: Vec2) =>
           Math.min(
             ...[...this.players.values()]
-              .filter((t) => t.id !== s.id && t.alive)
+              .filter(
+                (t) => t.id !== s.id && t.alive && !this.allied(s.id, t.id),
+              )
               .map((t) => dist(t, q)),
             1e5,
           );
@@ -507,14 +668,19 @@ export class Game {
         : input.weapon;
     // Remember the loaded shell while switching between guns and tubes.
     const previous = this.loadedAmmo.get(id) ?? "HE";
-    if (["HE", "AP", "SAP"].includes(weapon) && weapon !== previous) {
-      for (const t of s.turrets) t.reload = gunReload(s);
+    if (
+      (weapon === "HE" || weapon === "AP" || weapon === "SAP") &&
+      weapon !== previous
+    ) {
+      const swap = gunReload(s) * SHELL_SWITCH[weapon];
+      for (const t of s.turrets) t.reload = Math.max(t.reload, swap);
       this.loadedAmmo.set(id, weapon);
     }
     const target =
       typeof input.target === "string" &&
       this.players.has(input.target) &&
-      this.visible(s, this.players.get(input.target)!)
+      !this.allied(id, input.target) &&
+      this.sees(s, this.players.get(input.target)!)
         ? input.target
         : null;
     const wasFiring = s.input.firing;
@@ -767,6 +933,7 @@ export class Game {
       Vec2,
   ) {
     if (!target.alive || target.status.protection > 0 || amount <= 0) return 0;
+    if (this.allied(ownerId, target.id)) return 0;
     amount *= damageTaken(target);
     const actual = Math.min(target.hp, amount);
     target.hp -= actual;
@@ -1056,7 +1223,7 @@ export class Game {
       }
       if (s.input.target) {
         const target = this.players.get(s.input.target);
-        if (!target || !this.visible(s, target)) s.input.target = null;
+        if (!target || !this.sees(s, target)) s.input.target = null;
       }
       if (s.input.firing && this.time >= (this.nextHeldFire.get(s.id) ?? 0))
         this.fire(s.id);
@@ -1065,6 +1232,7 @@ export class Game {
           (t) =>
             t.id !== s.id &&
             t.alive &&
+            !this.allied(s.id, t.id) &&
             this.visible(s, t) &&
             this.lineClear(s, t) &&
             dist(s, t) < c.secondaryRange * (1 + 0.1 * s.upgrades.secondary),
@@ -1101,24 +1269,7 @@ export class Game {
         }
       }
     }
-    const all = [...this.players.values()].filter((s) => s.alive);
-    for (let i = 0; i < all.length; i++)
-      for (let j = i + 1; j < all.length; j++) {
-        const a = all[i],
-          b = all[j],
-          r = (HULLS[a.hull].length + HULLS[b.hull].length) * 0.28,
-          d = dist(a, b);
-        if (d < r) {
-          const direction = bearing(a, b),
-            push = (r - d) / 2 + 0.01;
-          a.x -= Math.sin(direction) * push;
-          a.z -= Math.cos(direction) * push;
-          b.x += Math.sin(direction) * push;
-          b.z += Math.cos(direction) * push;
-          a.speed *= 0.9;
-          b.speed *= 0.9;
-        }
-      }
+    this.separateHulls(dt);
     this.projectiles = this.projectiles.filter((p) => {
       if (p.delay && p.delay > 0) {
         p.delay = Math.max(0, p.delay - dt);
@@ -1166,8 +1317,10 @@ export class Game {
         y: oldY + (p.y - oldY) * waterFraction,
       };
       for (const target of this.players.values()) {
+        // Friendly fire is off: shells and torpedoes pass under allies.
         if (
           target.id === p.owner ||
+          this.allied(p.owner, target.id) ||
           !target.alive ||
           (p.kind === "TORP" && p.distance < 35)
         )
@@ -1202,6 +1355,11 @@ export class Game {
     this.ordnance.tick();
     this.supply.tick();
     if (this.mode === "domination") this.updateObjectives(dt);
+    if (
+      this.mode === "team" &&
+      Math.max(...this.teamKills()) >= TEAM_MATCH.killLimit
+    )
+      this.remaining = 0;
     if (this.remaining <= 0) {
       this.phase = "results";
       for (const s of this.players.values()) s.input.firing = false;
@@ -1219,6 +1377,37 @@ export class Game {
       });
     if (ships.some((s) => s.stats.score >= DOMINATION.scoreLimit))
       this.remaining = 0;
+  }
+  /**
+   * Ship-to-ship contact. Hulls are capsules (length × beam) so ships can sail
+   * close abeam. Overlaps are pushed apart, and only the part of a ship's way
+   * that drives into the other hull is shed; sliding along or backing away
+   * keeps full speed.
+   */
+  private separateHulls(dt: number) {
+    const all = [...this.players.values()].filter((s) => s.alive);
+    for (let i = 0; i < all.length; i++)
+      for (let j = i + 1; j < all.length; j++) {
+        const a = all[i],
+          b = all[j];
+        const contact = hullContact(a, b);
+        if (!contact) continue;
+        const { nx, nz, depth } = contact,
+          push = depth / 2 + 0.01;
+        a.x -= nx * push;
+        a.z -= nz * push;
+        b.x += nx * push;
+        b.z += nz * push;
+        // Share of each ship's heading that points into the other hull.
+        const intoB =
+          Math.sign(a.speed) *
+          (Math.sin(a.heading) * nx + Math.cos(a.heading) * nz);
+        const intoA =
+          -Math.sign(b.speed) *
+          (Math.sin(b.heading) * nx + Math.cos(b.heading) * nz);
+        if (intoB > 0) a.speed *= Math.exp(-RAM_DRAG * intoB * dt);
+        if (intoA > 0) b.speed *= Math.exp(-RAM_DRAG * intoA * dt);
+      }
   }
   /** NPC skill (1–5) of a bot ship; undefined for people. */
   botSkill(id: string): BotSkill | undefined {
@@ -1240,10 +1429,17 @@ export class Game {
     if (skill) entry.npc[field][skill - 1] += amount;
     else entry.player[field] += amount;
   }
-  /** Final order: score (domination), then kills, then damage dealt. */
+  /**
+   * Final order: the winning fleet first (team), score (domination), then
+   * kills, then damage dealt.
+   */
   ranking() {
+    const winner = this.winner();
+    const onWinner = (s: Ship) =>
+      winner !== null && this.teams.get(s.id) === winner ? 1 : 0;
     return [...this.players.values()].sort(
       (a, b) =>
+        onWinner(b) - onWinner(a) ||
         (this.mode === "domination" ? b.stats.score - a.stats.score : 0) ||
         b.stats.kills - a.stats.kills ||
         b.stats.damage - a.stats.damage,
@@ -1267,6 +1463,7 @@ export class Game {
         connected: s.connected,
         kills: s.stats.kills,
         deaths: s.stats.deaths,
+        team: this.teams.get(s.id),
       })),
       duration: this.duration,
       mode: this.mode,
@@ -1280,7 +1477,7 @@ export class Game {
       this.lastSeen.set(id, seen);
     }
     const visible = [...this.players.values()].filter(
-        (s) => s.id !== id && this.visible(self, s),
+        (s) => s.id !== id && this.sees(self, s),
       ),
       ids = new Set(visible.map((s) => s.id));
     const contacts: Contact[] = visible.map((s) => {
@@ -1309,6 +1506,7 @@ export class Game {
         fire: s.status.fire.filter((f) => f > 0).length,
         protection: s.status.protection,
         buffs: Object.keys(s.buffs) as BuffKind[],
+        ...(this.mode === "team" ? { team: this.teams.get(s.id) } : {}),
       };
     });
     const projectiles = this.projectiles
@@ -1357,11 +1555,15 @@ export class Game {
       contacts,
       lastSeen: [...seen.values()].filter((s) => !ids.has(s.id)),
       projectiles,
-      mines: this.ordnance.visible(self),
+      mines: this.ordnance.visible(self, (owner) => this.allied(id, owner)),
       smokes: this.smokes.map((s) => ({ ...s })),
       events,
       detected: [...this.players.values()].some(
-        (s) => s.id !== id && s.alive && this.visible(s, self),
+        (s) =>
+          s.id !== id &&
+          s.alive &&
+          !this.allied(s.id, id) &&
+          this.visible(s, self),
       ),
       scores: [...this.players.values()]
         .map((s) => ({
@@ -1376,6 +1578,7 @@ export class Game {
           deaths: s.stats.deaths,
           score: Math.floor(s.stats.score),
           verified: this.accounts.has(s.id),
+          ...(this.mode === "team" ? { team: this.teams.get(s.id) } : {}),
           ...(this.phase === "results"
             ? {
                 damage: Math.round(s.stats.damage),
@@ -1390,6 +1593,14 @@ export class Game {
             b.kills - a.kills ||
             (b.damage ?? 0) - (a.damage ?? 0),
         ),
+      ...(this.mode === "team"
+        ? {
+            team: this.teams.get(id),
+            teamKills: this.teamKills(),
+            teamKillLimit: TEAM_MATCH.killLimit,
+            winner: this.phase === "results" ? this.winner() : undefined,
+          }
+        : {}),
       mode: this.mode,
       zones: this.zones.map((z) => ({ ...z })),
       scoreLimit: DOMINATION.scoreLimit,

@@ -20,8 +20,13 @@ export interface Pickup extends Vec2 {
   expires: number;
 }
 export type Phase = "lobby" | "battle" | "results";
-/** deathmatch: ranked by kills. domination: race to the score limit by holding zones. */
-export type GameMode = "deathmatch" | "domination";
+/**
+ * deathmatch: ranked by kills. domination: race to the score limit by holding
+ * zones. team: two fleets race to the team kill limit.
+ */
+export type GameMode = "deathmatch" | "domination" | "team";
+/** Team index in team matches: 0 = red fleet, 1 = blue fleet. */
+export type Team = 0 | 1;
 export interface Zone extends Vec2 {
   id: string;
   radius: number;
@@ -201,6 +206,8 @@ export interface Contact extends Vec2 {
   fire: number;
   protection: number;
   buffs: BuffKind[];
+  /** Team matches only. */
+  team?: Team;
 }
 export interface LastSeen extends Vec2 {
   id: string;
@@ -235,6 +242,8 @@ export interface Score {
   level?: number;
   accuracy?: number;
   score?: number;
+  /** Team matches (and the lobby while one is set up). */
+  team?: Team;
 }
 export interface Snapshot {
   type: "snapshot";
@@ -256,6 +265,11 @@ export interface Snapshot {
   zones: Zone[];
   scoreLimit: number;
   pickups: Pickup[];
+  /** Team matches: own team, kills per team, the limit and the winner at the end. */
+  team?: Team;
+  teamKills?: [number, number];
+  teamKillLimit?: number;
+  winner?: Team | null;
 }
 export interface Lobby {
   type: "lobby";
@@ -276,6 +290,7 @@ export type ClientMessage =
   | { type: "addBot"; hull: Hull; model?: NpcModel; skill?: number }
   | { type: "removeBot"; id: string }
   | { type: "mode"; mode: GameMode }
+  | { type: "team"; team: Team; id?: string }
   | { type: "input"; input: Input }
   | { type: "salvo" }
   | { type: "ability"; ability: "dcp" | "special" }

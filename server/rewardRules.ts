@@ -1,8 +1,9 @@
 import type { MatchEntry, MatchSummary } from "./accounts";
 import { fromMicro } from "./rewardQueue";
+import { RULES } from "../shared/config";
 
 /** Which match modes a rule pays in. */
-export type ModeScope = "all" | "deathmatch" | "domination";
+export type ModeScope = "all" | "deathmatch" | "domination" | "team";
 interface Rule {
   enabled: boolean;
   modes: ModeScope;
@@ -19,6 +20,8 @@ export interface RewardRules {
   domination: Rule & { amount: string; per: number };
   survival: Rule & { amount: string; minWallets: number };
   participation: Rule & { amount: string };
+  /** Every captain of the winning fleet in a team match. */
+  teamWin: Rule & { amount: string };
   conditions: { minWallets: number; minDuration: number };
   caps: {
     perMatch: string;
@@ -42,6 +45,7 @@ export const DEFAULT_RULES: RewardRules = {
   domination: { enabled: true, modes: "domination", amount: "0.3", per: 100 },
   survival: { enabled: true, modes: "all", amount: "1", minWallets: 2 },
   participation: { enabled: true, modes: "all", amount: "0.5" },
+  teamWin: { enabled: true, modes: "team", amount: "2" },
   conditions: { minWallets: 1, minDuration: 120 },
   caps: {
     perMatch: "15",
@@ -53,6 +57,7 @@ export const DEFAULT_RULES: RewardRules = {
 
 export class RuleError extends Error {}
 
+const MAX_SEATS = RULES.maxPlayers;
 const AMOUNT = /^(?:0|[1-9]\d{0,6})(?:\.\d{1,6})?$/;
 /** Decimal CGC string → micro-units; zero allowed (a rule may pay nothing). */
 export function micro(amount: string) {
@@ -87,7 +92,8 @@ const bool = (v: unknown, fallback: boolean) =>
   typeof v === "boolean" ? v : fallback;
 function scope(v: unknown, fallback: ModeScope): ModeScope {
   if (v === undefined) return fallback;
-  if (v === "all" || v === "deathmatch" || v === "domination") return v;
+  if (v === "all" || v === "deathmatch" || v === "domination" || v === "team")
+    return v;
   throw new RuleError("적용 경기 방식이 올바르지 않습니다.");
 }
 function rule<T extends Rule>(input: unknown, base: T) {
@@ -120,6 +126,7 @@ export function normalizeRules(input: unknown): RewardRules {
   const dom = rule(input.domination, d.domination);
   const survival = rule(input.survival, d.survival);
   const join = rule(input.participation, d.participation);
+  const teamWin = rule(input.teamWin, d.teamWin);
   const cond = isObject(input.conditions) ? input.conditions : {};
   const caps = isObject(input.caps) ? input.caps : {};
   return {
@@ -133,7 +140,7 @@ export function normalizeRules(input: unknown): RewardRules {
         "순위 보상 최소 인원",
         d.rank.minWallets,
         1,
-        4,
+        MAX_SEATS,
       ),
     },
     playerKill: {
@@ -169,7 +176,7 @@ export function normalizeRules(input: unknown): RewardRules {
         "무침몰 최소 인원",
         d.survival.minWallets,
         1,
-        4,
+        MAX_SEATS,
       ),
     },
     participation: {
@@ -177,13 +184,18 @@ export function normalizeRules(input: unknown): RewardRules {
       modes: join.modes,
       amount: amountOf(join.v.amount, "참가 보상", d.participation.amount),
     },
+    teamWin: {
+      enabled: teamWin.enabled,
+      modes: teamWin.modes,
+      amount: amountOf(teamWin.v.amount, "팀 승리 보상", d.teamWin.amount),
+    },
     conditions: {
       minWallets: intOf(
         cond.minWallets,
         "최소 지갑 함장 수",
         d.conditions.minWallets,
         1,
-        4,
+        MAX_SEATS,
       ),
       minDuration: intOf(
         cond.minDuration,
@@ -239,9 +251,10 @@ function entryItems(
   e: MatchEntry,
   humanPlace: number,
   wallets: number,
-  mode: string,
+  match: Pick<MatchSummary, "mode" | "winner">,
   rules: RewardRules,
 ) {
+  const mode = match.mode;
   const items: { label: string; micro: bigint }[] = [];
   const add = (label: string, value: bigint) => {
     if (value > 0n) items.push({ label, micro: value });
@@ -297,6 +310,13 @@ function entryItems(
     add("무침몰", micro(rules.survival.amount));
   if (applies(rules.participation, mode))
     add("참가", micro(rules.participation.amount));
+  if (
+    mode === "team" &&
+    applies(rules.teamWin, mode) &&
+    match.winner !== null &&
+    e.team === match.winner
+  )
+    add("팀 승리", micro(rules.teamWin.amount));
   return items;
 }
 
@@ -321,7 +341,7 @@ export function computeMatchRewards(
     minimum = micro(rules.caps.minPayout);
   people.forEach((e, i) => {
     if (!e.accountId) return;
-    const items = entryItems(e, i + 1, wallets, match.mode, rules);
+    const items = entryItems(e, i + 1, wallets, match, rules);
     const earned = items.reduce((n, item) => n + item.micro, 0n);
     let payable = earned < perMatch ? earned : perMatch,
       note: string | undefined;

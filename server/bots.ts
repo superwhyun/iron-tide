@@ -257,7 +257,11 @@ export class BotCaptain {
     }
     const cfg = HULLS[ship.hull];
     const contacts = [...game.players.values()].filter(
-      (t) => t.id !== ship.id && t.alive && game.visible(ship, t),
+      (t) =>
+        t.id !== ship.id &&
+        t.alive &&
+        !game.allied(ship.id, t.id) &&
+        game.sees(ship, t),
     );
     contacts.sort((a, b) => dist(ship, a) - dist(ship, b));
     const target = contacts.find((t) => t.id === this.target) ?? contacts[0];

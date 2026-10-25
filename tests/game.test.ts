@@ -139,14 +139,23 @@ describe("navigation and weapon authority", () => {
     expect(g.fire("a", true)).toBe(false);
     expect(g.projectiles.length).toBe(n);
   });
-  it("switching shells restarts reload, returning from torpedoes preserves the loaded shell", () => {
+  it("switching shells takes a per-shell share of the reload, returning from torpedoes preserves the loaded shell", () => {
     const { g, a } = battle();
+    // Cruiser reload 7 s: AP 60 %, SAP 50 %, HE 40 %.
     g.setInput("a", { ...a.input, weapon: "AP" });
-    expect(a.turrets[0].reload).toBe(7);
+    expect(a.turrets[0].reload).toBeCloseTo(4.2);
     tick(g, 2);
     g.setInput("a", { ...a.input, weapon: "TORP" });
     g.setInput("a", { ...a.input, weapon: "AP" });
-    expect(a.turrets[0].reload).toBeCloseTo(5);
+    expect(a.turrets[0].reload).toBeCloseTo(2.2);
+    tick(g, 3);
+    g.setInput("a", { ...a.input, weapon: "HE" });
+    expect(a.turrets[0].reload).toBeCloseTo(2.8);
+    // A turret that is further from ready keeps its own longer timer.
+    a.turrets[0].reload = 6;
+    g.setInput("a", { ...a.input, weapon: "SAP" });
+    expect(a.turrets[0].reload).toBe(6);
+    expect(a.turrets[1].reload).toBeCloseTo(3.5);
   });
   it("main battery shells actually traverse the sea and hit a target", () => {
     const { g, a, b } = battle();

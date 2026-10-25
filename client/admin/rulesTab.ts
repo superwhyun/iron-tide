@@ -1,7 +1,7 @@
 import { api } from "../wallet";
-import { coins, errorText, esc, time, toMicro } from "./format";
+import { coins, errorText, esc, modeName, time, toMicro } from "./format";
 
-type ModeScope = "all" | "deathmatch" | "domination";
+type ModeScope = "all" | "deathmatch" | "domination" | "team";
 interface Rule {
   enabled: boolean;
   modes: ModeScope;
@@ -20,6 +20,7 @@ export interface RewardRules {
   domination: Rule & { amount: string; per: number | string };
   survival: Rule & { amount: string; minWallets: number | string };
   participation: Rule & { amount: string };
+  teamWin: Rule & { amount: string };
   conditions: { minWallets: number | string; minDuration: number | string };
   caps: {
     perMatch: string;
@@ -54,13 +55,15 @@ type RuleKey =
   | "damage"
   | "domination"
   | "survival"
-  | "participation";
+  | "participation"
+  | "teamWin";
 
 const MAX_RANKS = 10;
 const MODE_LABEL: Record<ModeScope, string> = {
   all: "모든 경기",
   deathmatch: "격침전만",
   domination: "거점전만",
+  team: "팀전만",
 };
 
 /** Sets `value` at a dotted path on a copy of `rules`. */
@@ -199,6 +202,7 @@ export class RulesTab {
         ${this.card(d, "damage", "피해량", `<label class="inline">${this.text("damage.amount", d.damage.amount)} CGC / 피해 ${this.text("damage.per", d.damage.per, "int")}</label>`, "적에게 준 실제 피해량에 비례합니다. NPC에게 준 피해는 아래 NPC 비율을 적용합니다.")}
         ${this.card(d, "domination", "거점 점수", `<label class="inline">${this.text("domination.amount", d.domination.amount)} CGC / ${this.text("domination.per", d.domination.per, "int")}점</label>`, "거점전 점수(거점 보유·점령·격침)에 비례합니다. 거점전에서만 계산됩니다.")}
         ${this.card(d, "survival", "무침몰 보너스", `<label class="inline">${this.text("survival.amount", d.survival.amount)} CGC</label><label class="inline">지갑 함장 ${this.text("survival.minWallets", d.survival.minWallets, "int")}명 이상일 때</label>`, "경기 내내 한 번도 침몰하지 않은 함장에게 줍니다.")}
+        ${this.card(d, "teamWin", "팀 승리", `<label class="inline">${this.text("teamWin.amount", d.teamWin.amount)} CGC</label>`, "팀전에서 이긴 함대의 지갑 함장 모두에게 줍니다. 무승부면 주지 않습니다.")}
         ${this.card(d, "participation", "참가 보상", `<label class="inline">${this.text("participation.amount", d.participation.amount)} CGC</label>`, "경기가 끝날 때까지 남아 있던 지갑 함장 모두에게 줍니다.")}
         ${this.conditionsCard(d)}
         ${this.capsCard(d)}
@@ -326,7 +330,7 @@ export class RulesTab {
     const matches = p.matches
       .map(
         (m) => `<article class="preview-match">
-        <header><strong>#${m.id} ${m.mode === "domination" ? "거점전" : "격침전"}</strong><span>${time(m.endedAt)} · ${Math.round(m.duration / 60)}분</span></header>
+        <header><strong>#${m.id} ${modeName(m.mode)}</strong><span>${time(m.endedAt)} · ${Math.round(m.duration / 60)}분</span></header>
         ${
           m.skipped
             ? `<p class="muted">${esc(m.skipped)}</p>`
